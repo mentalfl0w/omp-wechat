@@ -23,12 +23,9 @@ export async function createSession(
 
   const { session, modelFallbackMessage } = await createAgentSession({
     sessionManager: SessionManager.inMemory(),
-    cwd: config.cwd,
     enableMCP: false,
     enableLsp: false,
-    modelPattern: config.model || undefined,
     systemPrompt: config.systemPrompt,
-    toolNames: config.tools,
   });
 
   if (modelFallbackMessage) {

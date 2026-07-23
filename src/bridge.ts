@@ -116,9 +116,6 @@ export function startPollLoop(): DaemonState {
   });
 
   logger.info("OMP-Wechat poll loop starting", {
-    cwd: config.cwd,
-    model: config.model || "(OMP default)",
-    tools: config.tools,
     maxSessions: config.maxSessions,
     dmPolicy: config.dmPolicy,
   });

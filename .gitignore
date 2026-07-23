@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
+bun.lock
 
 # Build artifacts
 dist/
 *.bun-build
+tsconfig.json
 
 # Runtime
 logs/

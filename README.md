@@ -12,26 +12,28 @@ WeChat user → iLink Bot API → [OMP/Pi process] → SDK → AI provider
                                   └──── reply ← message_end ─┘
 ```
 
-The extension runs **inside** the OMP/Pi process. On `session_start`, the iLink long-poll loop starts in-process. The host keeps the process alive; the poll loop runs as a background promise. When the process exits, the poll loop stops and all sessions are disposed.
+The extension runs **inside** the OMP/Pi process. On `session_start`, the iLink long-poll loop starts in-process as a background promise. A singleton port lock ensures only one process runs the poll loop at a time — other OMP/Pi processes standby with a 30s failover timer to take over if the lock holder crashes.
 
 For boot-time persistence, install a launchd/systemd service via `/wechat install`. The service runs `omp --mode rpc` (or `pi --mode rpc`) with `KeepAlive`/`Restart=always`, so the host (and the poll loop) survive crashes and reboots.
 
-- **Typing indicator**: shows "Typing..." on WeChat while the model is thinking
 - **No external `bun` required** — OMP/Pi is a standalone binary with an embedded runtime
-- **No detached daemon** — the poll loop runs in-process, lifecycle tied to the host
-- **Cross-platform** — launchd (macOS) or systemd (Linux), no sudo on macOS
+- **Singleton** — port lock guarantees one poll loop across all concurrent OMP/Pi processes
+- **Failover** — non-lock-holder processes check every 30s and take over if the lock holder dies
 - **iLink layer**: long-polls `getupdates` for inbound messages, sends replies via `sendmessage`
 - **AI engine**: one in-memory session per WeChat chat, prompts injected via `session.prompt()`
+- **Typing indicator**: shows "Typing..." on WeChat while the model is thinking
 - **Access control**: pairing-based — strangers must pair before their messages are delivered
 
 ## Features
 
 - **OMP/Pi extension**: installs via `omp plugin link .` or `pi plugin link .`, auto-starts poll loop on `session_start`
 - **Slash commands**: `/wechat login`, `/wechat status`, `/wechat pair`, `/wechat allow`, `/wechat revoke`, `/wechat list`, `/wechat stop`, `/wechat install`, `/wechat uninstall`
+- **Singleton**: port lock guarantees one poll loop across all concurrent OMP/Pi processes — no duplicate replies
+- **Failover**: 30s timer takes over automatically if the lock holder crashes
 - **Bidirectional**: receive and reply to WeChat text messages
 - **Per-chat sessions**: each WeChat chat gets an independent AI session (concurrent, isolated)
 - **LRU pool**: caps memory usage by evicting least-recently-used sessions (default: 50)
-- **Typing indicator**: native WeChat "typing..." shown during AI processing
+- **Typing indicator**: native WeChat "Typing..." shown during AI processing
 - **Access control**: pairing / allowlist / disabled modes
 - **Long text chunking**: splits replies >2000 chars at paragraph/line/space boundaries
 - **Boot service**: optional launchd/systemd service for auto-start on boot
@@ -46,7 +48,7 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 ### Install
 
 ```bash
-git clone <your-repo-url> OMP-Wechat
+git clone https://github.com/mentalfl0w/omp-wechat.git OMP-Wechat
 cd OMP-Wechat
 bun install          # build dependency only
 bun run build
@@ -84,36 +86,10 @@ To remove: `/wechat uninstall`
 
 ## Configuration
 
-Configuration is loaded from (in priority order):
-
-1. Environment variables
-2. `~/.omp-wechat/config.yml`
-3. `~/.omp-wechat/.env`
-4. Built-in defaults
-
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `OMP_WECHAT_CWD` | Current directory | Host working directory (tools operate here) |
-| `OMP_MODEL` | Host default | Model spec (`provider/model` format, e.g. `anthropic/claude-sonnet-4-5`) |
-| `OMP_WECHAT_TOOLS` | `read,grep,glob,write,edit,bash` | Comma-separated allowed tools |
-| `OMP_WECHAT_MAX_SESSIONS` | `50` | Session pool cap (LRU eviction) |
-| `OMP_WECHAT_DM_POLICY` | `pairing` | Access policy: `pairing` / `allowlist` / `disabled` |
-
-### Config file
+Configuration is loaded from `~/.omp-wechat/config.yml`, falling back to built-in defaults. Model, working directory, and tools are inherited from the OMP/Pi session automatically.
 
 ```yaml
 # ~/.omp-wechat/config.yml
-model: anthropic/claude-sonnet-4-5
-cwd: /Users/you/Desktop/Work
-tools:
-  - read
-  - grep
-  - glob
-  - write
-  - edit
-  - bash
 maxSessions: 50
 dmPolicy: pairing
 systemPrompt: |
@@ -121,7 +97,13 @@ systemPrompt: |
   Keep replies concise and in plain text.
 ```
 
-> **Model credentials are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
+| Field | Default | Description |
+|---|---|---|
+| `maxSessions` | `50` | Session pool cap (LRU eviction) |
+| `dmPolicy` | `pairing` | Access policy: `pairing` / `allowlist` / `disabled` |
+| `systemPrompt` | Built-in | System prompt for WeChat chat sessions |
+
+> **Model, working directory, and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
 
 ## Slash Commands
 
@@ -151,34 +133,32 @@ The logged-in user (who scanned the QR code) is automatically added to the allow
 
 | Scenario | Behavior |
 |---|---|
-| Host session starts | Poll loop starts automatically |
-| Host session exits | Poll loop stops, all sessions disposed |
-| Host crashes | launchd/systemd restarts the host (if `/wechat install` was run) |
+| Host process starts | Poll loop starts automatically (acquires singleton lock) |
+| Other host processes | Standby with 30s failover timer, take over if lock holder dies |
+| Host process exits | Poll loop stops, lock released, all sessions disposed |
+| Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd restarts the host (if `/wechat install` was run) |
 | Machine reboots | Service auto-starts the host (if installed), poll loop resumes |
-| No boot service | Poll loop only runs while a host session is active |
+| No boot service | Poll loop only runs while a host process is active |
 
-Logs: `~/.omp-wechat/logs/daemon.log`
+Logs: `~/.omp-wechat/logs/daemon.log` (poll loop) and `~/.omp-wechat/logs/rpc.log` (boot service RPC output)
 
 ## Project Structure
 
 ```
 OMP-Wechat/
 ├── package.json              # omp.extensions / pi.extensions manifest
-├── tsconfig.json
-├── .env.example
 ├── src/
 │   ├── index.ts              # OMP/Pi extension entry (session_start + /wechat commands)
-│   ├── bridge.ts             # In-process poll loop + message handling
+│   ├── bridge.ts             # In-process poll loop + message handling + singleton port lock
 │   ├── service.ts            # Boot-time launchd/systemd install
-│   ├── config.ts             # Config loading (env + config.yml + defaults)
+│   ├── config.ts             # Config loading (config.yml + defaults)
 │   ├── ilink/
 │   │   ├── types.ts          # iLink Bot API type definitions
 │   │   ├── client.ts         # iLink API client (poll/send/typing)
 │   │   └── login.ts          # QR code login flow
 │   ├── engine/
 │   │   ├── session.ts        # AI session creation + reply subscription
-│   │   ├── pool.ts           # Session pool (LRU eviction, concurrency)
-│   │   └── prompt.ts         # Barrel exports
+│   │   └── pool.ts           # Session pool (LRU eviction, concurrency)
 │   ├── access/
 │   │   └── control.ts        # Access control (pairing/allowlist/disabled)
 │   ├── utils/

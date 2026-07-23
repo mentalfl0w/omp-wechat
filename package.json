@@ -6,8 +6,7 @@
   "main": "dist/index.js",
   "files": [
     "dist",
-    "README.md",
-    ".env.example"
+    "README.md"
   ],
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules",
