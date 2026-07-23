@@ -1,8 +1,14 @@
+/**
+ * WeChat bridge — poll loop, message handling, and reply logic.
+ *
+ * These functions are imported by the OMP extension (src/index.ts) and
+ * run **in-process** inside the OMP session. The poll loop is driven by
+ * `ctx.setInterval` so it is cleaned up automatically on session shutdown.
+ */
 import { loadConfig } from "./config.js";
+import type { AppConfig } from "./config.js";
 import { logger } from "./utils/logger.js";
 import { chunkText } from "./utils/chunk.js";
-import { login } from "./ilink/login.js";
-import { installService, uninstallService, serviceStatus } from "./daemon.js";
 import {
   getCredentials,
   getUpdates,
@@ -34,106 +40,82 @@ const BACKOFF_MS = 30_000;
 const RETRY_MS = 2_000;
 const MAX_SEND_RETRIES = 2;
 const CHUNK_LIMIT = 2000;
+const POLL_INTERVAL_MS = 0; // long-poll blocks 35s server-side, no extra delay
 
-// --- CLI entry point ---
+const LOCK_PORT = 19821; // arbitrary fixed port for singleton enforcement
 
-const command = process.argv[2] ?? "run";
-
-switch (command) {
-  case "login":
-    await login();
-    break;
-  case "run":
-    await run();
-    break;
-  case "install":
-    installService();
-    break;
-  case "uninstall":
-    uninstallService();
-    break;
-  case "pair": {
-    const code = process.argv[3];
-    if (!code) {
-      console.error("Usage: omp-wechat pair <code>");
-      process.exit(1);
-    }
-    const ok = approvePairing(code);
-    if (ok) {
-      console.log(`Pairing code ${code} approved`);
-    } else {
-      console.error(`Pairing code ${code} not found or expired`);
-      process.exit(1);
-    }
-    break;
-  }
-  case "allow": {
-    const wxid = process.argv[3];
-    if (!wxid) {
-      console.error("Usage: omp-wechat allow <wxid>");
-      process.exit(1);
-    }
-    addToAllowlist(wxid);
-    console.log(`Authorized: ${wxid}`);
-    break;
-  }
-  case "revoke": {
-    const wxid = process.argv[3];
-    if (!wxid) {
-      console.error("Usage: omp-wechat revoke <wxid>");
-      process.exit(1);
-    }
-    const ok = revokeFromAllowlist(wxid);
-    if (ok) {
-      console.log(`Revoked: ${wxid}`);
-    } else {
-      console.error(`Not found: ${wxid}`);
-      process.exit(1);
-    }
-    break;
-  }
-  case "list": {
-    const allowed = listAllowed();
-    if (allowed.length === 0) {
-      console.log("(no authorized users)");
-    } else {
-      console.log("Authorized users:");
-      for (const wxid of allowed) {
-        console.log(`  ${wxid}`);
-      }
-    }
-    break;
-  }
-  case "status": {
-    serviceStatus();
-    const pool = getPoolStatus();
-    const allowed = listAllowed();
-    console.log(`Session pool: ${pool.count}/${pool.max}`);
-    console.log(`Authorized users: ${allowed.length}`);
-    if (pool.chats.length > 0) {
-      console.log("Active chats:");
-      for (const chat of pool.chats) {
-        const ago = Math.round((Date.now() - chat.lastActive) / 1000);
-        console.log(`  ${chat.chatId} (${ago}s ago)`);
-      }
-    }
-    break;
-  }
-  default:
-    console.error(`Unknown command: ${command}`);
-    console.error("Available commands: login, run, install, uninstall, pair, allow, revoke, list, status");
-    process.exit(1);
+export interface DaemonState {
+  running: boolean;
+  config: AppConfig;
+  creds: Credentials;
+  lastError: string | null;
 }
 
-// --- Main run loop ---
+let pollActive = false;
+let lockServer: { stop: (closeActive?: boolean) => void } | null = null;
 
-async function run(): Promise<void> {
+/**
+ * Acquire singleton lock by binding a TCP port. OS guarantees only one
+ * process can hold the port. Process exit auto-releases it — no stale
+ * locks, no pidfile races, no cleanup needed.
+ */
+function acquireLock(): boolean {
+  try {
+    lockServer = Bun.serve({
+      port: LOCK_PORT,
+      hostname: "127.0.0.1",
+      fetch() {
+        return new Response("ok");
+      },
+    });
+    return true;
+  } catch {
+    // Port already in use — another process holds the lock
+    return false;
+  }
+}
+
+function releaseLock(): void {
+  if (lockServer) {
+    lockServer.stop(true);
+    lockServer = null;
+  }
+}
+
+/**
+ * Start the iLink long-poll loop in-process. Called from the extension's
+ * `session_start` handler. Safe to call multiple times — does nothing if
+ * already running.
+ */
+export function startPollLoop(): DaemonState {
   const config = loadConfig();
-  setMaxSessions(config.maxSessions);
-
   const creds = getCredentials();
 
-  logger.info("OMP-Wechat starting", {
+  // Guard against concurrent session_start events in the same process
+  if (pollActive) {
+    return { running: true, config, creds, lastError: null };
+  }
+
+  // Singleton: only one process can bind the lock port
+  if (!acquireLock()) {
+    logger.info("Another poll loop is running (port lock held), skipping");
+    return { running: false, config, creds, lastError: "another instance running" };
+  }
+
+  pollActive = true;
+  setMaxSessions(config.maxSessions);
+
+  const state: DaemonState = { running: true, config, creds, lastError: null };
+
+  // Reply handler: OMP reply -> send to WeChat
+  setReplyHandler((chatId: string, text: string) => {
+    sendTyping(creds, chatId, 2).catch(() => {});
+    sendReply(creds, chatId, text).catch((err: unknown) => {
+      logger.error(`[${chatId}] Reply send failed:`, err);
+    });
+  });
+
+  logger.info("OMP-Wechat poll loop starting", {
     cwd: config.cwd,
     model: config.model || "(OMP default)",
     tools: config.tools,
@@ -141,38 +123,40 @@ async function run(): Promise<void> {
     dmPolicy: config.dmPolicy,
   });
 
-  // Reply handler: OMP reply -> send to WeChat
-  setReplyHandler((chatId: string, text: string) => {
-    // Cancel typing indicator before sending the reply
-    sendTyping(creds, chatId, 2).catch(() => {});
-    sendReply(creds, chatId, text).catch((err: unknown) => {
-      logger.error(`[${chatId}] Reply send failed:`, err);
-    });
+  // Fire and forget — the loop runs as a background promise
+  pollLoop(creds, state).catch((err: unknown) => {
+    logger.error("Poll loop crashed:", err);
+    state.running = false;
+    state.lastError = String(err);
+    pollActive = false;
+    releaseLock();
   });
 
-  // Graceful shutdown
-  process.on("SIGINT", async () => {
-    logger.info("Shutting down...");
-    await disposeAll();
-    process.exit(0);
-  });
-  process.on("SIGTERM", async () => {
-    await disposeAll();
-    process.exit(0);
-  });
-
-  // Start long-poll
-  await pollLoop(creds);
+  return state;
 }
 
-async function pollLoop(creds: Credentials): Promise<void> {
-  let buf = loadSyncBuf();
+/** Stop the poll loop and dispose all sessions. */
+export async function stopPollLoop(): Promise<void> {
+  pollActive = false;
+  releaseLock();
+  await disposeAll();
+  logger.info("Poll loop stopped");
+}
+
+async function pollLoop(
+  creds: Credentials,
+  state: DaemonState,
+): Promise<void> {
   let failures = 0;
 
   logger.info("Long-poll started");
 
-  while (true) {
+  while (pollActive) {
     try {
+      // Re-read sync_buf from disk each iteration — another poll loop
+      // instance (from a prior session that didn't shut down cleanly)
+      // may have advanced it.
+      const buf = loadSyncBuf();
       const resp = await getUpdates(creds, buf);
 
       if (resp.ret !== undefined && resp.ret !== 0) {
@@ -190,10 +174,10 @@ async function pollLoop(creds: Credentials): Promise<void> {
       }
 
       failures = 0;
+      state.lastError = null;
 
-      if (resp.get_updates_buf) {
-        buf = resp.get_updates_buf;
-        saveSyncBuf(buf);
+      if (resp.get_updates_buf && resp.get_updates_buf !== buf) {
+        saveSyncBuf(resp.get_updates_buf);
       }
 
       const msgs = resp.msgs ?? [];
@@ -204,6 +188,7 @@ async function pollLoop(creds: Credentials): Promise<void> {
       }
     } catch (err: unknown) {
       failures++;
+      state.lastError = String(err);
       logger.error(`Poll error (${failures}/${MAX_FAILURES}):`, err);
       if (failures >= MAX_FAILURES) {
         failures = 0;
@@ -219,7 +204,6 @@ async function handleInbound(
   creds: Credentials,
   msg: InboundMessage,
 ): Promise<void> {
-  // Only handle user messages (type 1)
   if (msg.message_type !== 1) return;
 
   const senderId = msg.from_user_id;
@@ -233,7 +217,7 @@ async function handleInbound(
   if (result.action === "pair") {
     if (contextToken) {
       const lead = result.isResend ? "Still waiting for pairing" : "Pairing required";
-      const text = `${lead} — run in terminal:\n\nomp-wechat pair ${result.code}`;
+      const text = `${lead} — approve in OMP with: /wechat pair ${result.code}`;
       await sendMessage(creds, senderId, text, contextToken).catch((err: unknown) => {
         logger.warn("Pairing reply send failed:", err);
       });
@@ -241,14 +225,12 @@ async function handleInbound(
     return;
   }
 
-  // Message passed the gate, inject into OMP
   const text = extractInboundText(msg);
   if (!text) return;
 
   const config = loadConfig();
   logger.info(`[${senderId}] Inbound: ${text.slice(0, 80)}`);
 
-  // Show typing indicator while the model is thinking
   await sendTyping(creds, senderId, 1).catch(() => {});
 
   try {
@@ -270,7 +252,6 @@ async function sendReply(
     return;
   }
 
-  // Chunk long text
   const chunks = chunkText(text, CHUNK_LIMIT);
 
   for (const chunk of chunks) {
@@ -291,3 +272,12 @@ async function sendReply(
     }
   }
 }
+
+// Re-export access control functions for slash commands
+export {
+  approvePairing,
+  addToAllowlist,
+  revokeFromAllowlist,
+  listAllowed,
+  getPoolStatus,
+};

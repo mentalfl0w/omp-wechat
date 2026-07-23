@@ -22,8 +22,7 @@ export async function login(): Promise<void> {
   logger.info("Fetching QR code...");
   const qrRes = await fetch(`${baseUrl}ilink/bot/get_bot_qrcode?bot_type=3`);
   if (!qrRes.ok) {
-    logger.error(`Failed to fetch QR code: ${qrRes.status}`);
-    process.exit(1);
+    throw new Error(`Failed to fetch QR code: ${qrRes.status}`);
   }
 
   const qrData = (await qrRes.json()) as QrCodeResponse;
@@ -31,8 +30,7 @@ export async function login(): Promise<void> {
   const qrUrl: string = qrData.qrcode_img_content;
 
   if (!qrcodeToken || !qrUrl) {
-    logger.error("Invalid QR code data", qrData);
-    process.exit(1);
+    throw new Error(`Invalid QR code data: ${JSON.stringify(qrData)}`);
   }
 
   // Step 2: render QR code in terminal
@@ -68,8 +66,7 @@ export async function login(): Promise<void> {
         break;
 
       case "expired":
-        logger.error("QR code expired, please run login again");
-        process.exit(1);
+        throw new Error("QR code expired, please run login again");
 
       case "confirmed": {
         const creds: Credentials = {
@@ -80,8 +77,7 @@ export async function login(): Promise<void> {
         };
 
         if (!creds.token) {
-          logger.error("Login response missing bot_token");
-          process.exit(1);
+          throw new Error("Login response missing bot_token");
         }
 
         saveCredentials(creds);
@@ -101,8 +97,7 @@ export async function login(): Promise<void> {
     await Bun.sleep(POLL_INTERVAL_MS);
   }
 
-  logger.error("Login timeout, please run login again");
-  process.exit(1);
+  throw new Error("Login timeout, please run login again");
 }
 
 async function pollQrStatus(

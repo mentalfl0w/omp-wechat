@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+*.bun-build
+
+# Runtime
+logs/
+
+# OS
+.DS_Store
+
+# Local docs (design notes, not part of the published project)
+aidocs/
+
+# Environment
+.env
