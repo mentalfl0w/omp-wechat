@@ -1,6 +1,6 @@
 {
   "name": "omp-wechat",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "OMP/Pi extension: bridge WeChat messages to OMP's AI engine via the iLink Bot API",
   "type": "module",
   "main": "dist/index.js",
@@ -9,7 +9,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules",
+    "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules --external '@oh-my-pi/*'",
     "typecheck": "tsc --noEmit"
   },
   "omp": {
@@ -37,10 +37,10 @@
   "license": "MIT",
   "author": "liujiangnan",
   "dependencies": {
-    "@oh-my-pi/pi-coding-agent": "latest",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "latest",
     "@types/bun": "latest",
     "typescript": "latest"
   }
