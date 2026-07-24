@@ -5,8 +5,10 @@
  * injection. Thread-safe by virtue of JS single-threaded async.
  */
 import type { AppConfig } from "../config.js";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "../utils/logger.js";
 import { ChatSession } from "./session.js";
+import { removeSessionDir } from "./session-store.js";
 
 export interface PoolStatus {
   count: number;
@@ -46,10 +48,16 @@ export class SessionPool {
     return entry;
   }
 
-  /** Inject a user message into the session for a chat. */
-  async prompt(chatId: string, contextToken: string, text: string, config: AppConfig): Promise<void> {
+  /** Inject a user message (with optional images) into the session for a chat. */
+  async prompt(
+    chatId: string,
+    contextToken: string,
+    text: string,
+    config: AppConfig,
+    images?: ImageContent[],
+  ): Promise<void> {
     const entry = await this.ensure(chatId, contextToken, config);
-    await entry.prompt(text);
+    await entry.prompt(text, images);
   }
 
   /** Get the ChatSession for a chat (for command access). */
@@ -57,9 +65,27 @@ export class SessionPool {
     return this.pool.get(chatId);
   }
 
+  /** Dispose and remove a session so the next message creates a fresh one. */
+  async resetSession(chatId: string): Promise<void> {
+    const entry = this.pool.get(chatId);
+    if (entry) {
+      await entry.dispose();
+      this.pool.delete(chatId);
+    }
+    // Also remove the on-disk session directory — otherwise
+    // SessionManager.continueRecent() on the next ensure() would
+    // resume the session we just disposed, defeating /new.
+    removeSessionDir(chatId);
+  }
+
   /** Get the latest context_token for a chat. */
   getContextToken(chatId: string): string {
     return this.pool.get(chatId)?.getContextToken() ?? "";
+  }
+
+  /** Whether the session for a chat has a vision-capable model. */
+  supportsVision(chatId: string): boolean {
+    return this.pool.get(chatId)?.supportsVision() ?? false;
   }
 
   private evictOldest(): void {

@@ -11,9 +11,21 @@ export interface TextItem {
 export interface ImageItem {
   type: 2;
   image_item: {
+    /** CDN encrypted query param (preferred download identifier) */
     file_url?: string;
+    /** Full pre-signed CDN URL (alternative to file_url) */
+    full_url?: string;
+    /** AES key as 32-char hex string (preferred) */
+    aeskey?: string;
+    /** AES key as base64 (fallback) */
     aes_key?: string;
     file_size?: number;
+    /** Nested media object (some iLink versions) */
+    media?: {
+      aes_key?: string;
+      file_size?: number;
+      file_url?: string;
+    };
   };
 }
 

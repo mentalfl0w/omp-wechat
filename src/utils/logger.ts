@@ -1,6 +1,7 @@
 import { homedir } from "os";
 import { join } from "path";
-import { mkdirSync, appendFileSync } from "fs";
+import { mkdirSync } from "fs";
+import { RotatingLog } from "./rotating-log.js";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -21,6 +22,16 @@ try {
   mkdirSync(LOG_DIR, { recursive: true });
 } catch {}
 
+const rotatingLog = new RotatingLog({
+  filePath: LOG_FILE,
+  maxBytes: 5 * 1024 * 1024,  // 5 MB
+  maxFiles: 3,
+  maxAgeMs: 30 * 24 * 60 * 60 * 1000,  // 30 days
+});
+
+// Clean stale log files on startup
+rotatingLog.cleanStale();
+
 function ts(): string {
   return new Date().toISOString();
 }
@@ -33,9 +44,7 @@ function log(level: LogLevel, msg: string, meta?: unknown) {
     : `${prefix} ${msg}\n`;
   // File only — writing to stderr pollutes the OMP host process's
   // log output. The wechat.log file is the canonical log source.
-  try {
-    appendFileSync(LOG_FILE, line);
-  } catch {}
+  rotatingLog.write(line);
 }
 
 export const logger = {

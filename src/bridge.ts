@@ -27,8 +27,11 @@ import {
   loadSyncBuf,
   saveSyncBuf,
   extractInboundText,
+  extractInboundImages,
 } from "./ilink/client.js";
+import { downloadAndDecrypt } from "./ilink/cdn.js";
 import type { InboundMessage, Credentials } from "./ilink/types.js";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
   gate,
   approvePairing,
@@ -39,6 +42,7 @@ import {
 import { SessionPool } from "./engine/pool.js";
 import { CommandRegistry } from "./command/registry.js";
 import { ModelCommand } from "./command/model-command.js";
+import { NewSessionCommand } from "./command/new-session-command.js";
 
 const MAX_FAILURES = 3;
 const BACKOFF_MS = 30_000;
@@ -63,9 +67,9 @@ export class WeChatBridge {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private pool: SessionPool | null = null;
   private commands = new CommandRegistry();
-
   constructor() {
     this.commands.register(new ModelCommand());
+    this.commands.register(new NewSessionCommand());
   }
 
   /** Start the poll loop. Idempotent — returns existing state if running. */
@@ -256,15 +260,69 @@ export class WeChatBridge {
       return;
     }
 
-    // Normal message → AI processing
+    // Normal message → AI processing (with optional images)
     await sendTyping(creds, senderId, 1).catch(() => {});
 
     try {
-      await this.pool!.prompt(senderId, contextToken, text, config);
+      // Ensure session exists before checking vision capability,
+      // so the first message with images also gets processed.
+      const session = await this.pool!.ensure(senderId, contextToken, config);
+      const images = await this.downloadImages(creds, msg, senderId);
+      await session.prompt(text, images);
     } catch (err: unknown) {
       logger.error(`[${senderId}] prompt failed:`, err);
       await this.sendReply(creds, senderId, "Processing failed, please try again.");
     }
+  }
+
+  /**
+   * Download and decrypt inbound images from WeChat CDN.
+   * Returns ImageContent[] for the OMP session, or [] if no images,
+   * the model lacks vision, or download failed.
+   * Non-fatal — text still goes through regardless.
+   */
+  private async downloadImages(
+    _creds: Credentials,
+    msg: InboundMessage,
+    chatId: string,
+  ): Promise<ImageContent[]> {
+    const imageItems = extractInboundImages(msg);
+    if (imageItems.length === 0) return [];
+
+    // Skip CDN download if the model can't use images — saves bandwidth
+    // and avoids downloading large files only for the SDK to discard them.
+    if (!this.pool?.supportsVision(chatId)) {
+      logger.info(`[${chatId}] Skipping image download — model does not support vision`);
+      return [];
+    }
+
+    const results: ImageContent[] = [];
+    for (const item of imageItems) {
+      const img = item.image_item;
+      const buf = await downloadAndDecrypt(
+        img.file_url,
+        img.full_url,
+        img.aeskey,
+        img.aes_key ?? img.media?.aes_key,
+        `image[${chatId}]`,
+      );
+      if (buf) {
+        // Detect MIME from magic bytes; WeChat sends JPEG/PNG
+        const mimeType = buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50
+          ? "image/png"
+          : "image/jpeg";
+        results.push({
+          type: "image",
+          data: buf.toString("base64"),
+          mimeType,
+        });
+      }
+    }
+
+    if (results.length > 0) {
+      logger.info(`[${chatId}] Downloaded ${results.length}/${imageItems.length} images for AI`);
+    }
+    return results;
   }
 
   private async sendReply(creds: Credentials, chatId: string, text: string): Promise<void> {

@@ -86,13 +86,14 @@ To remove: `/wechat uninstall`
 
 ## Configuration
 
-Configuration is loaded from `~/.omp-wechat/config.yml`, falling back to built-in defaults. Model, working directory, and tools are inherited from the OMP/Pi session automatically.
+Configuration is loaded from `~/.omp-wechat/config.yml`, falling back to built-in defaults.
 
 ```yaml
 # ~/.omp-wechat/config.yml
 maxSessions: 50
 dmPolicy: pairing
 model: "@smol"              # default model (role alias or provider/id)
+cwd: ~/projects/my-app      # working directory for AI sessions
 systemPrompt: |
   You are an AI assistant chatting via WeChat.
   Keep replies concise and in plain text.
@@ -103,8 +104,10 @@ systemPrompt: |
 | `maxSessions` | `50` | Session pool cap (LRU eviction) |
 | `dmPolicy` | `pairing` | Access policy: `pairing` / `allowlist` / `disabled` |
 | `model` | OMP default | Default model: role alias (`@smol`, `@slow`) or `provider/id` |
+| `cwd` | `process.cwd()` | Working directory for AI sessions — determines which project context (CLAUDE.md, .omp/) the agent loads |
 | `systemPrompt` | Built-in | System prompt for WeChat chat sessions |
-> **Model, working directory, and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
+
+> **Model and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
 
 ## Slash Commands
 
@@ -127,6 +130,7 @@ systemPrompt: |
 | `/model` | Show current AI model |
 | `/models` | List all available models |
 | `/model provider/id` | Switch model for this chat (e.g. `/model anthropic/claude-haiku-4-5`) |
+| `/new` | Reset session — clear context and start fresh |
 
 ## Access Control
 

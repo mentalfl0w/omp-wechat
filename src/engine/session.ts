@@ -7,6 +7,7 @@
  */
 import { createAgentSession, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AppConfig } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { sessionDirFor, ensureSessionsDir } from "./session-store.js";
@@ -65,7 +66,7 @@ export class ChatSession {
     ensureSessionsDir();
     const sessionDir = sessionDirFor(chatId);
     const sessionManager = await SessionManager.continueRecent(
-      process.cwd(),
+      config.cwd || process.cwd(),
       sessionDir,
     );
     logger.info(`Session dir: ${sessionDir} (resumed=${sessionManager.getSessionFile() !== null})`);
@@ -86,6 +87,9 @@ export class ChatSession {
     }
 
     const wrapper = new ChatSession(session, chatId, contextToken);
+    // Log vision capability so operators know if image input is supported.
+    const visionRole = session.settings.getModelRole("vision");
+    logger.info(`[${chatId}] Model: ${session.model?.id ?? "unknown"}, vision role: ${visionRole ?? "(not configured)"}`);
 
     // Subscribe to assistant replies — forward text to the bridge.
     session.subscribe((event: AgentSessionEvent) => {
@@ -103,10 +107,15 @@ export class ChatSession {
     return wrapper;
   }
 
-  /** Inject a user message into the AI session. */
-  async prompt(text: string): Promise<void> {
+  /** Inject a user message (with optional images) into the AI session. */
+  async prompt(text: string, images?: ImageContent[]): Promise<void> {
     this.lastActive = Date.now();
-    await this.session.prompt(text);
+    await this.session.prompt(text, images?.length ? { images } : undefined);
+  }
+
+  /** Whether OMP has a vision model role configured. */
+  supportsVision(): boolean {
+    return this.session.settings.getModelRole("vision") !== undefined;
   }
 
 

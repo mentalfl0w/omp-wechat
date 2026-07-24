@@ -12,6 +12,7 @@ import type {
   GetUpdatesResponse,
   InboundMessage,
   GetConfigResponse,
+  ImageItem,
 } from "./types.js";
 import { logger } from "../utils/logger.js";
 
@@ -242,6 +243,7 @@ export function saveSyncBuf(buf: string): void {
 export function extractInboundText(msg: InboundMessage): string {
   const items = msg.item_list ?? [];
   const parts: string[] = [];
+  let imgCount = 0;
 
   for (const item of items) {
     switch (item.type) {
@@ -249,7 +251,7 @@ export function extractInboundText(msg: InboundMessage): string {
         if (item.text_item?.text) parts.push(item.text_item.text);
         break;
       case 2:
-        parts.push("(image)");
+        imgCount++;
         break;
       case 3:
         parts.push(item.voice_item?.text ?? "(voice)");
@@ -263,5 +265,21 @@ export function extractInboundText(msg: InboundMessage): string {
     }
   }
 
+  if (imgCount > 0 && parts.length === 0) {
+    parts.push(`(user sent ${imgCount} image${imgCount > 1 ? "s" : ""})`);
+  } else if (imgCount > 0) {
+    parts.push(`(+${imgCount} image${imgCount > 1 ? "s" : ""})`);
+  }
+
   return parts.join("\n") || "";
+}
+
+/**
+ * Extract image items from an inbound message for CDN download.
+ * Returns the raw ImageItem objects — caller handles download+decrypt.
+ */
+export function extractInboundImages(msg: InboundMessage): ImageItem[] {
+  return (msg.item_list ?? []).filter(
+    (item): item is ImageItem => item.type === 2,
+  );
 }

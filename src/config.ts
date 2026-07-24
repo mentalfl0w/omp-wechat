@@ -12,12 +12,16 @@ export interface AppConfig {
   systemPrompt: string;
   /**
    * Default model for WeChat AI sessions.
-   * Accepts role aliases (@smol, @slow, @default, @designer) or
-   * concrete provider/model-id (e.g. "anthropic/claude-haiku-4-5").
-   * Resolved by the OMP SDK at session creation — omp-wechat never
-   * maintains its own alias mapping. Undefined = inherit OMP global default.
+   * Accepts a role alias (e.g. "vision") or a provider/id pattern
+   * (e.g. "xfyun/xopglm51"). Undefined = inherit OMP global default.
    */
   model?: string;
+  /**
+   * Working directory for AI sessions. Determines which project
+   * context (CLAUDE.md, .omp/, etc.) the agent loads.
+   * Defaults to process.cwd() if not set.
+   */
+  cwd?: string;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI assistant chatting with users via WeChat.
@@ -43,17 +47,24 @@ export function loadConfig(): AppConfig {
     if (existsSync(CONFIG_FILE)) {
       const yaml = readFileSync(CONFIG_FILE, "utf8");
       const parsed = parseSimpleYaml(yaml);
-
       if (parsed.maxSessions) config.maxSessions = parseInt(parsed.maxSessions, 10);
       if (parsed.dmPolicy) config.dmPolicy = parsed.dmPolicy;
-      if (parsed.systemPrompt) config.systemPrompt = parsed.systemPrompt;
       if (parsed.model) config.model = parsed.model;
+      if (parsed.cwd) config.cwd = expandTilde(parsed.cwd);
+      if (parsed.systemPrompt) config.systemPrompt = parsed.systemPrompt;
     }
   } catch (err) {
     logger.warn("Failed to load config.yml, using defaults", err);
   }
 
   return config;
+}
+
+/** Expand `~` at the start of a path to the user's home directory. */
+function expandTilde(p: string): string {
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  if (p === "~") return homedir();
+  return p;
 }
 
 /** Minimal YAML parser (supports key: value and multiline `|` blocks) */

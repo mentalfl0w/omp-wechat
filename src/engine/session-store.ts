@@ -38,6 +38,23 @@ export function sessionDirFor(chatId: string): string {
 export function ensureSessionsDir(): void {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
 }
+/**
+ * Remove the on-disk session directory for a single chat.
+ * Called by /new to ensure the next message starts a fresh session
+ * (continueRecent() would otherwise resume the deleted session).
+ * Returns true if a directory was removed.
+ */
+export function removeSessionDir(chatId: string): boolean {
+  const dir = sessionDirFor(chatId);
+  if (!existsSync(dir)) return false;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (err) {
+    logger.warn(`Failed to remove session dir ${dir}: ${err}`);
+    return false;
+  }
+}
 
 /**
  * Remove session directories whose newest file hasn't been touched
