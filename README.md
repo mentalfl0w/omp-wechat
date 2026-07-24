@@ -12,9 +12,9 @@ WeChat user → iLink Bot API → [OMP/Pi process] → SDK → AI provider
                                   └──── reply ← message_end ─┘
 ```
 
-The extension runs **inside** the OMP/Pi process. On `session_start`, the iLink long-poll loop starts in-process as a background promise. A singleton port lock ensures only one process runs the poll loop at a time — other OMP/Pi processes standby with a 30s failover timer to take over if the lock holder crashes.
+The extension runs **inside** the OMP/Pi process. The iLink long-poll loop starts at extension load time (not `session_start`) as a background promise. A singleton port lock ensures only one process runs the poll loop at a time — other OMP/Pi processes standby with a 30s failover timer to take over if the lock holder crashes.
 
-For boot-time persistence, install a launchd/systemd service via `/wechat install`. The service runs `omp --mode rpc` (or `pi --mode rpc`) with `KeepAlive`/`Restart=always`, so the host (and the poll loop) survive crashes and reboots.
+For boot-time persistence, install a launchd/systemd service via `/wechat install`. The service runs `omp --mode rpc` (or `pi --mode rpc`) with a `get_state` JSON-RPC heartbeat piped to stdin every 5s — without an active RPC client, `omp --mode rpc` exits on idle stdin, so the heartbeat keeps the process alive. `KeepAlive`/`Restart=always` handles crashes and reboots.
 
 - **No external `bun` required** — OMP/Pi is a standalone binary with an embedded runtime
 - **Singleton** — port lock guarantees one poll loop across all concurrent OMP/Pi processes
@@ -26,7 +26,7 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 
 ## Features
 
-- **OMP/Pi extension**: installs via `omp plugin link .` or `pi plugin link .`, auto-starts poll loop on `session_start`
+- **OMP/Pi extension**: installs via `omp plugin link .` or `pi plugin link .`, auto-starts poll loop at extension load time
 - **Slash commands**: `/wechat login`, `/wechat status`, `/wechat pair`, `/wechat allow`, `/wechat revoke`, `/wechat list`, `/wechat stop`, `/wechat install`, `/wechat uninstall`
 - **Singleton**: port lock guarantees one poll loop across all concurrent OMP/Pi processes — no duplicate replies
 - **Failover**: 30s timer takes over automatically if the lock holder crashes
@@ -56,7 +56,7 @@ bun run build
 omp plugin link .    # or: pi plugin link .
 ```
 
-This links the extension into OMP/Pi. The poll loop starts automatically on your next `session_start`.
+This links the extension into OMP/Pi. The poll loop starts at extension load time — no `session_start` required.
 
 ### Login (scan QR code)
 
@@ -68,7 +68,7 @@ A QR code appears in the terminal. Scan it with WeChat and confirm on your phone
 
 ### Run
 
-No explicit run command needed — the poll loop auto-starts on `session_start`. Once running, send a message to the bot on WeChat — it will be processed and the reply sent back.
+No explicit run command needed — the poll loop starts at extension load time. Once running, send a message to the bot on WeChat — it will be processed and the reply sent back.
 
 To check status: `/wechat status`. To stop: `/wechat stop`.
 
@@ -78,9 +78,9 @@ To check status: `/wechat status`. To stop: `/wechat stop`.
 /wechat install
 ```
 
-Installs a launchd (macOS) or systemd (Linux) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot. The host stays alive via `KeepAlive`/`Restart=always`, keeping the poll loop running across crashes and reboots.
+Installs a launchd (macOS) or systemd (Linux) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot. A `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep the process alive (without an active RPC client, `omp --mode rpc` exits on idle stdin). `KeepAlive`/`Restart=always` handles crashes and reboots.
 
-Logs: `~/.omp-wechat/logs/rpc.log`
+Logs: `~/.omp/logs/rpc.log` (stderr only; stdout discarded) and `~/.omp/logs/wechat.log` (poll loop)
 Manage: `launchctl start|stop com.omp-wechat` (macOS) or `sudo systemctl start|stop omp-wechat` (Linux)
 
 To remove: `/wechat uninstall`
@@ -149,14 +149,14 @@ The logged-in user (who scanned the QR code) is automatically added to the allow
 
 | Scenario | Behavior |
 |---|---|
-| Host process starts | Poll loop starts automatically (acquires singleton lock) |
+| Host process starts | Poll loop starts at extension load time (acquires singleton lock) |
 | Other host processes | Standby with 30s failover timer, take over if lock holder dies |
 | Host process exits | Poll loop stops, lock released, all sessions disposed |
 | Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd restarts the host (if `/wechat install` was run) |
 | Machine reboots | Service auto-starts the host (if installed), poll loop resumes |
 | No boot service | Poll loop only runs while a host process is active |
 
-Logs: `~/.omp-wechat/logs/daemon.log` (poll loop) and `~/.omp-wechat/logs/rpc.log` (boot service RPC output)
+Logs: `~/.omp/logs/wechat.log` (poll loop) and `~/.omp/logs/rpc.log` (boot service stderr)
 
 ## Project Structure
 
@@ -164,7 +164,7 @@ Logs: `~/.omp-wechat/logs/daemon.log` (poll loop) and `~/.omp-wechat/logs/rpc.lo
 OMP-Wechat/
 ├── package.json              # omp.extensions / pi.extensions manifest
 ├── src/
-│   ├── index.ts              # OMP/Pi extension entry (session_start + /wechat commands)
+│   ├── index.ts              # OMP/Pi extension entry (extension load + /wechat commands)
 │   ├── bridge.ts             # In-process poll loop + message handling + singleton port lock
 │   ├── service.ts            # Boot-time launchd/systemd install
 │   ├── config.ts             # Config loading (config.yml + defaults)
