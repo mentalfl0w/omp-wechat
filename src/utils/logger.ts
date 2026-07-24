@@ -31,8 +31,8 @@ function log(level: LogLevel, msg: string, meta?: unknown) {
   const line = meta !== undefined
     ? `${prefix} ${msg} ${JSON.stringify(meta)}\n`
     : `${prefix} ${msg}\n`;
-  // stderr (visible when run in foreground) + file (visible when detached)
-  process.stderr.write(line);
+  // File only — writing to stderr pollutes the OMP host process's
+  // log output. The wechat.log file is the canonical log source.
   try {
     appendFileSync(LOG_FILE, line);
   } catch {}
