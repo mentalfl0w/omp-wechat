@@ -25,7 +25,7 @@ function detectPlatform(): Platform {
 }
 
 function getLogDir(): string {
-  return join(homedir(), ".omp-wechat", "logs");
+  return join(homedir(), ".omp", "logs");
 }
 
 /** Resolve the host binary path (omp or pi). */

@@ -98,7 +98,7 @@ export function startPollLoop(): DaemonState {
 
   // Singleton: only one process can bind the lock port
   if (!acquireLock()) {
-    logger.info("Another poll loop is running (port lock held), skipping");
+    logger.debug("Another poll loop is running (port lock held), skipping");
     return { running: false, config, creds, lastError: "another instance running" };
   }
 

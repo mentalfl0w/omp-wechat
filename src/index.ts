@@ -31,6 +31,7 @@ import {
 } from "./bridge.js";
 import type { DaemonState } from "./bridge.js";
 import { installService, uninstallService, isServiceInstalled } from "./service.js";
+import { logger } from "./utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types — matches the ExtensionAPI surface from OMP
@@ -63,11 +64,6 @@ interface ExtensionAPI {
       handler: (args: string, ctx: ExtensionCommandContext) => void | Promise<void>;
     },
   ) => void;
-  logger?: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string) => void;
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -96,7 +92,7 @@ export default function wechatExtension(pi: ExtensionAPI) {
     } else {
       // Not the lock holder — start a failover check every 30s.
       // If the lock holder crashes, this process will take over.
-      pi.logger?.info("WeChat bridge: another instance holds the lock, starting failover watch");
+      logger.debug("WeChat bridge: another instance holds the lock, starting failover watch");
       ctx.setInterval(() => {
         if (daemonState?.running) return; // already running
         daemonState = startPollLoop();
@@ -200,7 +196,7 @@ export default function wechatExtension(pi: ExtensionAPI) {
           try {
             const r = installService();
             ctx.ui.notify(`Boot service installed (${r.platform}): ${r.path}`, "info");
-            pi.logger?.info(
+            logger.info(
               `Service installed on ${r.platform} at ${r.path}\n` +
                 `OMP will run via launchd/systemd at boot. ` +
                 `Manage: ${r.platform === "darwin" ? "launchctl start|stop com.omp-wechat" : "sudo systemctl start|stop omp-wechat"}`,

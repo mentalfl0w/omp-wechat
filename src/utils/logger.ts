@@ -13,8 +13,8 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 
 const minLevel: LogLevel = (process.env.OMP_WECHAT_LOG as LogLevel) ?? "info";
 
-const LOG_DIR = join(homedir(), ".omp-wechat", "logs");
-const LOG_FILE = join(LOG_DIR, "daemon.log");
+const LOG_DIR = join(homedir(), ".omp", "logs");
+const LOG_FILE = join(LOG_DIR, "wechat.log");
 
 // Ensure log dir exists (best-effort, won't throw in import-time)
 try {
