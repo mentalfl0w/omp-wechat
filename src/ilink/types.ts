@@ -1,6 +1,19 @@
 /**
  * iLink Bot API type definitions
+ * Based on official iLink SDK protocol types.
  */
+
+/** CDN media download info — shared by all media types */
+export interface CDNMedia {
+  /** Encrypted query param for CDN download URL */
+  encrypt_query_param?: string;
+  /** AES key as base64 (raw 16 bytes or hex string) */
+  aes_key?: string;
+  /** Encryption type: 1 = AES-128-ECB */
+  encrypt_type?: number;
+  /** Server-provided full download URL (use directly if present) */
+  full_url?: string;
+}
 
 /** Inbound message items (union type) */
 export interface TextItem {
@@ -11,47 +24,59 @@ export interface TextItem {
 export interface ImageItem {
   type: 2;
   image_item: {
-    /** CDN encrypted query param (preferred download identifier) */
-    file_url?: string;
-    /** Full pre-signed CDN URL (alternative to file_url) */
-    full_url?: string;
-    /** AES key as 32-char hex string (preferred) */
+    /** AES key as 32-char hex string (preferred over media.aes_key) */
     aeskey?: string;
-    /** AES key as base64 (fallback) */
-    aes_key?: string;
-    file_size?: number;
-    /** Nested media object (some iLink versions) */
-    media?: {
-      aes_key?: string;
-      file_size?: number;
-      file_url?: string;
-    };
+    /** CDN download info */
+    media?: CDNMedia;
+    /** Thumbnail CDN info */
+    thumb_media?: CDNMedia;
+    /** Image URL (direct, non-CDN) */
+    url?: string;
+    mid_size?: number;
+    thumb_size?: number;
+    thumb_height?: number;
+    thumb_width?: number;
+    hd_size?: number;
   };
 }
 
 export interface VoiceItem {
   type: 3;
   voice_item: {
+    /** CDN download info */
+    media?: CDNMedia;
+    /** Server-side ASR transcription */
     text?: string;
-    file_url?: string;
-    duration?: number;
+    /** Playback duration in seconds */
+    playtime?: number;
+    encode_type?: number;
+    bits_per_sample?: number;
+    sample_rate?: number;
   };
 }
 
 export interface FileItem {
   type: 4;
   file_item: {
-    file_name: string;
-    file_url?: string;
-    file_size?: number;
+    /** CDN download info */
+    media?: CDNMedia;
+    file_name?: string;
+    md5?: string;
+    /** File size as string */
+    len?: string;
   };
 }
 
 export interface VideoItem {
   type: 5;
   video_item: {
-    file_url?: string;
-    thumb_url?: string;
+    /** CDN download info */
+    media?: CDNMedia;
+    /** Thumbnail CDN info */
+    thumb_media?: CDNMedia;
+    video_size?: number;
+    play_length?: number;
+    video_md5?: string;
   };
 }
 

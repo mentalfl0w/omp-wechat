@@ -31,6 +31,7 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 - **Singleton**: port lock guarantees one poll loop across all concurrent OMP/Pi processes — no duplicate replies
 - **Failover**: 30s timer takes over automatically if the lock holder crashes
 - **Bidirectional**: receive and reply to WeChat text messages
+- **Image recognition**: inbound images are downloaded from WeChat CDN, AES-decrypted, and passed to the vision model
 - **Per-chat sessions**: each WeChat chat gets an independent AI session (concurrent, isolated)
 - **LRU pool**: caps memory usage by evicting least-recently-used sessions (default: 50)
 - **Typing indicator**: native WeChat "Typing..." shown during AI processing
@@ -108,6 +109,8 @@ systemPrompt: |
 | `systemPrompt` | Built-in | System prompt for WeChat chat sessions |
 
 > **Model and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
+>
+> **Image recognition** requires a vision model role configured in OMP (e.g. `omp model role vision xfyun/xopkimik25`). If no vision role is set, inbound images are skipped — only the text placeholder is sent to the AI.
 
 ## Slash Commands
 
@@ -188,11 +191,12 @@ OMP-Wechat/
 - **Reply-only**: iLink requires `context_token` from an inbound message; you cannot initiate conversations
 - **1:1 only**: iLink Bot API does not support group chats
 - **Single instance**: iLink allows only one bot connection per account
-- **Text only (Phase 1)**: images/voice/video are represented as `(image)` / `(voice)` placeholders; media support is planned
+- **Media**: inbound images are downloaded from WeChat CDN, AES-decrypted, and passed to the vision model (if `modelRoles.vision` is configured); voice/video remain as placeholders
 
 ## Roadmap
 
-- [ ] **Phase 2**: Media support (inbound images as base64, voice transcription)
+- [x] **Phase 2a**: Inbound image support (CDN download + AES decrypt + vision model)
+- [ ] **Phase 2b**: Voice transcription / video support
 - [x] **Phase 3**: Persistent sessions — `SessionManager.continueRecent()` per chat, context survives restarts
 - [x] **Phase 4**: Per-chat model selection — `/model` `/models` chat commands for manual switching
 - [ ] **Phase 5**: Fine-grained permissions (per-user tool restrictions, bash approval via WeChat)

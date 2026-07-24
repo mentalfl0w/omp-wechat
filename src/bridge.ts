@@ -316,11 +316,12 @@ export class WeChatBridge {
     const results: ImageContent[] = [];
     for (const item of imageItems) {
       const img = item.image_item;
+      logger.debug(`[${chatId}] image_item raw: ${JSON.stringify(img)}`);
       const buf = await downloadAndDecrypt(
-        img.file_url,
-        img.full_url,
+        img.media?.encrypt_query_param,
+        img.media?.full_url,
         img.aeskey,
-        img.aes_key ?? img.media?.aes_key,
+        img.media?.aes_key,
         `image[${chatId}]`,
       );
       if (buf) {

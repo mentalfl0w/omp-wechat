@@ -45,17 +45,14 @@ function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
 }
 
 /**
- * Build a CDN download URL from an encrypted query param.
- * If the item has `full_url`, use that directly.
+ * Build a CDN download URL.
+ * Prefers full_url (server-provided direct URL), falls back to
+ * constructing from encrypt_query_param.
  */
-function buildCdnUrl(fileUrl?: string, fullUrl?: string): string | null {
+function buildCdnUrl(encryptQueryParam?: string, fullUrl?: string): string | null {
   if (fullUrl) return fullUrl;
-  if (!fileUrl) return null;
-
-  // file_url might already be a full URL or just the encrypted param
-  if (fileUrl.startsWith("http")) return fileUrl;
-
-  return `${CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(fileUrl)}`;
+  if (!encryptQueryParam) return null;
+  return `${CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
 }
 
 /**
@@ -63,13 +60,13 @@ function buildCdnUrl(fileUrl?: string, fullUrl?: string): string | null {
  * Returns the plaintext Buffer, or null on failure.
  */
 export async function downloadAndDecrypt(
-  fileUrl?: string,
+  encryptQueryParam?: string,
   fullUrl?: string,
   aeskeyHex?: string,
   aesKeyBase64?: string,
   label = "media",
 ): Promise<Buffer | null> {
-  const url = buildCdnUrl(fileUrl, fullUrl);
+  const url = buildCdnUrl(encryptQueryParam, fullUrl);
   if (!url) {
     logger.warn(`[${label}] No CDN URL available`);
     return null;
