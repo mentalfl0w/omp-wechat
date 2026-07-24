@@ -81,28 +81,39 @@ export default function wechatExtension(pi: ExtensionAPI) {
     pi.setLabel("OMP-Wechat Bridge");
   }
 
-  pi.on("session_start", async (_event, ctx) => {
-    // Try to start the poll loop. If another process holds the lock,
-    // start() returns { running: false } — we set up a failover
-    // timer to periodically retry in case the lock holder dies.
-    bridge = new WeChatBridge();
-    daemonState = bridge.start();
+  // Start the poll loop at extension load time — don't wait for session_start.
+  // In rpc mode, session_start never fires (no RPC client), but the extension
+  // IS loaded. bridge.start() spins up Bun.serve (port lock) + pollLoop (long-poll
+  // fetch), both of which keep the event loop busy — the process stays alive.
+  bridge = new WeChatBridge();
+  daemonState = bridge.start();
 
-    if (daemonState.running) {
-      ctx.ui.notify("WeChat bridge started", "info");
-    } else {
-      // Not the lock holder — start a failover check every 30s.
-      // If the lock holder crashes, this process will take over.
-      logger.debug("WeChat bridge: another instance holds the lock, starting failover watch");
-      ctx.setInterval(() => {
-        if (daemonState?.running) return; // already running
-        daemonState = bridge!.start();
-        if (daemonState.running) {
-          ctx.ui.notify("WeChat bridge: took over from failed instance", "info");
-        }
-      }, 30_000);
+  if (daemonState.running) {
+    logger.info("WeChat bridge started at extension load");
+  } else {
+    // Not the lock holder — keep process alive and retry every 30s.
+    // If the lock holder crashes, this process will take over.
+    logger.debug("WeChat bridge: another instance holds the lock, starting failover watch");
+    setInterval(() => {
+      if (daemonState?.running) return;
+      daemonState = bridge!.start();
+      if (daemonState.running) {
+        logger.info("WeChat bridge: took over from failed instance");
+      }
+    }, 30_000);
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    // Poll loop is already running from extension load.
+    // If it was stopped (e.g. via /wechat stop), try to restart.
+    if (bridge && !daemonState?.running) {
+      daemonState = bridge.start();
+      if (daemonState.running) {
+        ctx.ui.notify("WeChat bridge started", "info");
+      }
     }
   });
+
   pi.registerCommand("wechat", {
     description:
       "WeChat bridge: login, status, pair, allow, revoke, list, stop, clear, install, uninstall",

@@ -28,9 +28,12 @@ function getLogDir(): string {
   return join(homedir(), ".omp", "logs");
 }
 
-/** Resolve the host binary path (omp or pi). */
+/** Resolve the host binary name (omp or pi) — not full path.
+ *  The plist/systemd uses PATH to resolve it at runtime. */
 function resolveHostBinary(): string {
-  return process.execPath || "omp";
+  const exe = process.execPath || "omp";
+  const basename = exe.split("/").pop() || "omp";
+  return basename;
 }
 
 // --- macOS launchd ---
@@ -52,10 +55,9 @@ function generatePlist(): string {
 
   <key>ProgramArguments</key>
   <array>
-    <string>${omp}</string>
-    <string>--mode</string>
-    <string>rpc</string>
-    <string>--no-title</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>while true; do echo '{"id":"ka","type":"get_state"}'; sleep 5; done | exec ${omp} --mode rpc --no-title >/dev/null</string>
   </array>
 
   <key>RunAtLoad</key>
@@ -67,11 +69,6 @@ function generatePlist(): string {
   <key>ThrottleInterval</key>
   <integer>10</integer>
 
-  <key>StandardInputPath</key>
-  <string>/dev/null</string>
-
-  <key>StandardOutPath</key>
-  <string>${logDir}/rpc.log</string>
   <key>StandardErrorPath</key>
   <string>${logDir}/rpc.log</string>
 
@@ -137,15 +134,14 @@ Wants=network-online.target
 Type=simple
 User=${user}
 Group=${user}
-ExecStart=${omp} --mode rpc --no-title
-StandardInput=null
+ExecStart=/bin/sh -c 'while true; do echo "{\\"id\\":\\"ka\\",\\"type\\":\\"get_state\\"}"; sleep 5; done | exec ${omp} --mode rpc --no-title >/dev/null'
 Restart=always
 RestartSec=10
 
 Environment=HOME=${homedir()}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
-StandardOutput=append:${logDir}/rpc.log
+StandardOutput=null
 StandardError=append:${logDir}/rpc.log
 
 NoNewPrivileges=true
