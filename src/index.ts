@@ -18,18 +18,15 @@
  *   /wechat install  — install boot-time launchd/systemd service
  *   /wechat uninstall — remove boot-time service
  */
-import { loadConfig } from "./config.js";
 import { login } from "./ilink/login.js";
+import { WeChatBridge, clearAllSessions } from "./bridge.js";
+import type { DaemonState } from "./bridge.js";
 import {
-  startPollLoop,
-  stopPollLoop,
   approvePairing,
   addToAllowlist,
   revokeFromAllowlist,
   listAllowed,
-  getPoolStatus,
-} from "./bridge.js";
-import type { DaemonState } from "./bridge.js";
+} from "./access/control.js";
 import { installService, uninstallService, isServiceInstalled } from "./service.js";
 import { logger } from "./utils/logger.js";
 
@@ -70,6 +67,9 @@ interface ExtensionAPI {
 // State
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+let bridge: WeChatBridge | null = null;
 let daemonState: DaemonState | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,9 +83,10 @@ export default function wechatExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     // Try to start the poll loop. If another process holds the lock,
-    // startPollLoop returns { running: false } — we set up a failover
+    // start() returns { running: false } — we set up a failover
     // timer to periodically retry in case the lock holder dies.
-    daemonState = startPollLoop();
+    bridge = new WeChatBridge();
+    daemonState = bridge.start();
 
     if (daemonState.running) {
       ctx.ui.notify("WeChat bridge started", "info");
@@ -95,7 +96,7 @@ export default function wechatExtension(pi: ExtensionAPI) {
       logger.debug("WeChat bridge: another instance holds the lock, starting failover watch");
       ctx.setInterval(() => {
         if (daemonState?.running) return; // already running
-        daemonState = startPollLoop();
+        daemonState = bridge!.start();
         if (daemonState.running) {
           ctx.ui.notify("WeChat bridge: took over from failed instance", "info");
         }
@@ -104,7 +105,7 @@ export default function wechatExtension(pi: ExtensionAPI) {
   });
   pi.registerCommand("wechat", {
     description:
-      "WeChat bridge: login, status, pair, allow, revoke, list, stop, install, uninstall",
+      "WeChat bridge: login, status, pair, allow, revoke, list, stop, clear, install, uninstall",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/);
       const sub = parts[0] ?? "";
@@ -115,7 +116,7 @@ export default function wechatExtension(pi: ExtensionAPI) {
         case "status": {
           const running = daemonState?.running ?? false;
           const svc = isServiceInstalled();
-          const pool = getPoolStatus();
+          const pool = bridge?.getPoolStatus() ?? { count: 0, max: 0, chats: [] };
           const allowed = listAllowed();
           const lines = [
             `Poll loop: ${running ? "running" : "stopped"}`,
@@ -186,7 +187,10 @@ export default function wechatExtension(pi: ExtensionAPI) {
         }
 
         case "stop": {
-          await stopPollLoop();
+          if (bridge) {
+            await bridge.stop();
+            bridge = null;
+          }
           daemonState = null;
           ctx.ui.notify("WeChat bridge stopped", "info");
           break;
@@ -217,9 +221,20 @@ export default function wechatExtension(pi: ExtensionAPI) {
           break;
         }
 
+        case "clear": {
+          if (bridge) {
+            await bridge.stop();
+            bridge = null;
+          }
+          daemonState = null;
+          const removed = clearAllSessions();
+          ctx.ui.notify(`Cleared ${removed} session(s)`, "info");
+          break;
+        }
+
         default:
           ctx.ui.notify(
-            "Unknown subcommand. Available: login, status, pair, allow, revoke, list, stop, install, uninstall",
+            "Unknown subcommand. Available: login, status, pair, allow, revoke, list, stop, clear, install, uninstall",
             "warn",
           );
       }

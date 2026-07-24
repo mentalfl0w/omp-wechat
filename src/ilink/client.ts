@@ -131,6 +131,7 @@ export async function sendMessage(
   to: string,
   text: string,
   contextToken: string,
+  clientId?: string,
 ): Promise<void> {
   await apiFetch(
     creds,
@@ -139,7 +140,10 @@ export async function sendMessage(
       msg: {
         from_user_id: "",
         to_user_id: to,
-        client_id: `omp-wechat-${Date.now()}-${randomBytes(4).toString("hex")}`,
+        // Reuse caller-provided client_id across retries so the server
+        // can de-duplicate when a timeout fires after the message was
+        // already accepted.
+        client_id: clientId ?? `omp-wechat-${Date.now()}-${randomBytes(4).toString("hex")}`,
         message_type: 2, // BOT
         message_state: 2, // FINISH
         item_list: [{ type: 1, text_item: { text } }],

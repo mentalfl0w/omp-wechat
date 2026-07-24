@@ -10,6 +10,14 @@ export interface AppConfig {
   dmPolicy: string;
   /** System prompt */
   systemPrompt: string;
+  /**
+   * Default model for WeChat AI sessions.
+   * Accepts role aliases (@smol, @slow, @default, @designer) or
+   * concrete provider/model-id (e.g. "anthropic/claude-haiku-4-5").
+   * Resolved by the OMP SDK at session creation — omp-wechat never
+   * maintains its own alias mapping. Undefined = inherit OMP global default.
+   */
+  model?: string;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI assistant chatting with users via WeChat.
@@ -39,6 +47,7 @@ export function loadConfig(): AppConfig {
       if (parsed.maxSessions) config.maxSessions = parseInt(parsed.maxSessions, 10);
       if (parsed.dmPolicy) config.dmPolicy = parsed.dmPolicy;
       if (parsed.systemPrompt) config.systemPrompt = parsed.systemPrompt;
+      if (parsed.model) config.model = parsed.model;
     }
   } catch (err) {
     logger.warn("Failed to load config.yml, using defaults", err);
