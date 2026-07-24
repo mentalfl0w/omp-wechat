@@ -92,6 +92,7 @@ Configuration is loaded from `~/.omp-wechat/config.yml`, falling back to built-i
 # ~/.omp-wechat/config.yml
 maxSessions: 50
 dmPolicy: pairing
+model: "@smol"              # default model (role alias or provider/id)
 systemPrompt: |
   You are an AI assistant chatting via WeChat.
   Keep replies concise and in plain text.
@@ -101,8 +102,8 @@ systemPrompt: |
 |---|---|---|
 | `maxSessions` | `50` | Session pool cap (LRU eviction) |
 | `dmPolicy` | `pairing` | Access policy: `pairing` / `allowlist` / `disabled` |
+| `model` | OMP default | Default model: role alias (`@smol`, `@slow`) or `provider/id` |
 | `systemPrompt` | Built-in | System prompt for WeChat chat sessions |
-
 > **Model, working directory, and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
 
 ## Slash Commands
@@ -118,6 +119,14 @@ systemPrompt: |
 | `/wechat stop` | Stop the poll loop |
 | `/wechat install` | Install boot-time launchd/systemd service |
 | `/wechat uninstall` | Remove boot-time service |
+
+### Chat Commands (via WeChat message)
+
+| Command | Description |
+|---|---|
+| `/model` | Show current AI model |
+| `/models` | List all available models |
+| `/model provider/id` | Switch model for this chat (e.g. `/model anthropic/claude-haiku-4-5`) |
 
 ## Access Control
 
@@ -174,15 +183,14 @@ OMP-Wechat/
 
 - **Reply-only**: iLink requires `context_token` from an inbound message; you cannot initiate conversations
 - **1:1 only**: iLink Bot API does not support group chats
-- **No message history**: WeChat provides no history API; session context is lost on restart (in-memory sessions)
 - **Single instance**: iLink allows only one bot connection per account
 - **Text only (Phase 1)**: images/voice/video are represented as `(image)` / `(voice)` placeholders; media support is planned
 
 ## Roadmap
 
 - [ ] **Phase 2**: Media support (inbound images as base64, voice transcription)
-- [ ] **Phase 3**: Persistent sessions (`SessionManager.create()` per chat directory)
-- [ ] **Phase 4**: Per-chat model selection (smol for simple questions, slow for complex)
+- [x] **Phase 3**: Persistent sessions — `SessionManager.continueRecent()` per chat, context survives restarts
+- [x] **Phase 4**: Per-chat model selection — `/model` `/models` chat commands for manual switching
 - [ ] **Phase 5**: Fine-grained permissions (per-user tool restrictions, bash approval via WeChat)
 
 ## License
