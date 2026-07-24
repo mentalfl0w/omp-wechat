@@ -240,7 +240,7 @@ export function saveSyncBuf(buf: string): void {
 
 // --- Inbound message text extraction ---
 
-export function extractInboundText(msg: InboundMessage): string {
+export function extractInboundText(msg: InboundMessage, includeImagePlaceholder = true): string {
   const items = msg.item_list ?? [];
   const parts: string[] = [];
   let imgCount = 0;
@@ -265,9 +265,9 @@ export function extractInboundText(msg: InboundMessage): string {
     }
   }
 
-  if (imgCount > 0 && parts.length === 0) {
+  if (includeImagePlaceholder && imgCount > 0 && parts.length === 0) {
     parts.push(`(user sent ${imgCount} image${imgCount > 1 ? "s" : ""})`);
-  } else if (imgCount > 0) {
+  } else if (includeImagePlaceholder && imgCount > 0) {
     parts.push(`(+${imgCount} image${imgCount > 1 ? "s" : ""})`);
   }
 

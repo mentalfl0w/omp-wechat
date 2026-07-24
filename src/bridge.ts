@@ -30,7 +30,7 @@ import {
   extractInboundImages,
 } from "./ilink/client.js";
 import { downloadAndDecrypt } from "./ilink/cdn.js";
-import type { InboundMessage, Credentials } from "./ilink/types.js";
+import type { InboundMessage, Credentials, TextItem } from "./ilink/types.js";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
   gate,
@@ -235,38 +235,55 @@ export class WeChatBridge {
       return;
     }
 
-    const text = extractInboundText(msg);
-    if (!text) return;
+    // Quick pre-check: any content at all? (before creating session)
+    if (!(msg.item_list ?? []).length) return;
+
+    // Extract raw text for dedup + command dispatch (before session creation).
+    // Type-narrow to TextItem — other item types don't have text_item.
+    const rawText = (msg.item_list ?? [])
+      .filter((item): item is TextItem => item.type === 1)
+      .map((item) => item.text_item?.text ?? "")
+      .filter(Boolean)
+      .join("\n");
+    const hasImages = (msg.item_list ?? []).some((item) => item.type === 2);
 
     // Cross-process dedup: skip iLink re-delivery of the same message.
-    const dedupKey = makeDedupKey(senderId, msg.create_time_ms, text);
+    const dedupKey = makeDedupKey(senderId, msg.create_time_ms, rawText || "(image)");
     if (dedupKey && isDuplicate(dedupKey)) {
-      logger.info(`[${senderId}] Skipping duplicate message: ${text.slice(0, 80)}`);
+      logger.info(`[${senderId}] Skipping duplicate message: ${(rawText || "(image)").slice(0, 80)}`);
       return;
     }
 
     const config = loadConfig();
-    logger.info(`[${senderId}] Inbound (ts=${msg.create_time_ms ?? "n/a"}): ${text.slice(0, 80)}`);
+    logger.info(`[${senderId}] Inbound (ts=${msg.create_time_ms ?? "n/a"}): ${(rawText || "(image)").slice(0, 80)}`);
 
-    // Command dispatch: /model, /models, etc.
-    const invocation = this.commands.tryParse(text);
-    if (invocation) {
-      const reply = await invocation
-        .execute({ pool: this.pool!, config, chatId: senderId })
-        .catch((err: unknown) => `Command failed: ${err instanceof Error ? err.message : String(err)}`);
-      await sendMessage(creds, senderId, reply, contextToken).catch((err: unknown) => {
-        logger.warn(`[${senderId}] Command reply send failed:`, err);
-      });
-      return;
+    // Command dispatch: /model, /models, etc. (only when text present)
+    if (rawText) {
+      const invocation = this.commands.tryParse(rawText);
+      if (invocation) {
+        const reply = await invocation
+          .execute({ pool: this.pool!, config, chatId: senderId })
+          .catch((err: unknown) => `Command failed: ${err instanceof Error ? err.message : String(err)}`);
+        await sendMessage(creds, senderId, reply, contextToken).catch((err: unknown) => {
+          logger.warn(`[${senderId}] Command reply send failed:`, err);
+        });
+        return;
+      }
     }
 
     // Normal message → AI processing (with optional images)
     await sendTyping(creds, senderId, 1).catch(() => {});
 
     try {
-      // Ensure session exists before checking vision capability,
-      // so the first message with images also gets processed.
       const session = await this.pool!.ensure(senderId, contextToken, config);
+
+      // Include image placeholder only when no vision model — LLM can't
+      // see the images so we describe what was sent.  With vision, the
+      // images are passed as ImageContent and the model sees them directly.
+      const hasVision = session.supportsVision();
+      const text = extractInboundText(msg, !hasVision);
+      if (!text && !hasImages) return;
+
       const images = await this.downloadImages(creds, msg, senderId);
       await session.prompt(text, images);
     } catch (err: unknown) {
