@@ -10,7 +10,7 @@
  *
  * Lifecycle:
  *   const bridge = new WeChatBridge();
- *   bridge.start();   // from extension session_start
+ *   bridge.start();   // from extension load (wechatExtension function body)
  *   bridge.stop();    // from extension shutdown or /wechat stop
  */
 import { randomBytes } from "crypto";

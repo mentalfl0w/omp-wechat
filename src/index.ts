@@ -1,11 +1,10 @@
 /**
  * OMP extension entry point for OMP-Wechat.
  *
- * On `session_start`, attempts to start the iLink long-poll loop
- * in-process via a singleton port lock. If another process already
- * holds the lock, this process skips the poll loop but keeps a
- * 30s failover timer — if the lock holder dies, this process
- * takes over automatically.
+ * At extension load time, starts the iLink long-poll loop in-process
+ * via a singleton port lock. If another process already holds the
+ * lock, this process skips the poll loop but keeps a 30s failover
+ * timer — if the lock holder dies, this process takes over automatically.
  *
  * Slash commands:
  *   /wechat login    — scan QR code to log in

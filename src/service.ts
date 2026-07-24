@@ -2,9 +2,10 @@
  * Cross-platform boot-time service install/uninstall.
  *
  * Installs a launchd plist (macOS) or systemd service (Linux) that runs
- * the host binary (`omp --mode rpc` or `pi --mode rpc`) at boot. The host
- * stays alive (launchd KeepAlive / systemd Restart=always), loads the
- * extension, fires session_start, and the poll loop runs in-process.
+ * the host binary (`omp --mode rpc` or `pi --mode rpc`) at boot. A
+ * `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep
+ * the process alive (omp exits on idle stdin without an RPC client).
+ * launchd KeepAlive / systemd Restart=always handles crashes.
  * No external bun needed — the host is a standalone binary with an
  * embedded runtime.
  */
