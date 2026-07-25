@@ -81,6 +81,9 @@ export class ChatSession {
       // OMP global default.
       modelPattern: config.model,
     });
+    // WeChat is a lightweight chat surface — disable the advisor to avoid
+    // burning tokens on second-model review even if the user enabled it globally.
+    session.setAdvisorEnabled(false);
 
     if (modelFallbackMessage) {
       logger.warn(`Model fallback: ${modelFallbackMessage}`);
