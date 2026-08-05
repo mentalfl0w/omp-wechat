@@ -40,8 +40,7 @@ export function saveCredentials(creds: Credentials): void {
 export function getCredentials(): Credentials {
   const creds = loadCredentials();
   if (!creds?.token || !creds?.baseUrl) {
-    logger.error("Not logged in — run: omp-wechat login");
-    process.exit(1);
+    throw new Error("Not logged in — run /wechat login");
   }
   return creds;
 }
