@@ -224,28 +224,26 @@ $logPath = Join-Path $env:USERPROFILE '.omp\\logs\\rpc.log'
 $logDir = Split-Path $logPath
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
 while ($true) {
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $ompPath
-  $psi.Arguments = '--mode rpc --no-title'
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardInput = $true
-  $psi.RedirectStandardError = $true
-  $p = [System.Diagnostics.Process]::Start($psi)
   try {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $ompPath
+    $psi.Arguments = '--mode rpc --no-title'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
     $errTask = $p.StandardError.ReadToEndAsync()
     while (-not $p.HasExited) {
       $p.StandardInput.WriteLine('{"id":"ka","type":"get_state"}')
       Start-Sleep -Seconds 5
     }
   } catch {
-    # omp exited or pipe broke — loop will restart
+    # omp failed to start or exited — loop will restart
   } finally {
-    if (-not $p.HasExited) { $p.Kill() }
-    $p.WaitForExit()
-    $err = $errTask.Result
-    if ($err) { Add-Content -Path $logPath -Value $err }
+    if ($p -and -not $p.HasExited) { $p.Kill() }
+    if ($p) { $p.WaitForExit() }
+    if ($errTask) { $err = $errTask.Result; if ($err) { Add-Content -Path $logPath -Value $err } }
   }
-  # omp exited — wait 10s before restarting (backoff, matches systemd RestartSec=10)
   Start-Sleep -Seconds 10
 }
 `;
@@ -257,10 +255,9 @@ function installWinTask(): void {
 
   writeFileSync(winScriptPath(), generateWinScript());
 
-  // Remove existing task if present (ignore errors)
+  // Stop existing task instance before deleting (prevents duplicate processes)
+  Bun.spawnSync(["schtasks", "/end", "/tn", WIN_TASK_NAME], { stderr: "ignore" });
   Bun.spawnSync(["schtasks", "/delete", "/tn", WIN_TASK_NAME, "/f"], { stderr: "ignore" });
-
-  // Create scheduled task — runs at user logon, no admin required
   const scriptPath = winScriptPath();
   const taskCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`;
   const result = Bun.spawnSync(
