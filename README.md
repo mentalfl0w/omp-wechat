@@ -78,7 +78,7 @@ To check status: `/wechat status`. To stop: `/wechat stop`.
 /wechat install
 ```
 
-Installs a launchd (macOS), systemd (Linux), or Task Scheduler (Windows) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot. A `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep the process alive (without an active RPC client, `omp --mode rpc` exits on idle stdin). `KeepAlive`/`Restart=always`/Task Scheduler handles crashes and reboots.
+Installs a launchd (macOS), systemd (Linux), or Task Scheduler (Windows) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot (macOS/Linux) or user logon (Windows). A `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep the process alive (without an active RPC client, `omp --mode rpc` exits on idle stdin). launchd `KeepAlive`/systemd `Restart=always`/PowerShell restart-loop handles crashes. On Windows, the task uses `/sc onlogon` (no admin required); the host starts when the user logs in, not at bare-metal boot.
 
 Logs: `~/.omp/logs/rpc.log` (stderr only; stdout discarded) and `~/.omp/logs/wechat.log` (poll loop)
 Manage:
@@ -156,7 +156,7 @@ The logged-in user (who scanned the QR code) is automatically added to the allow
 | Other host processes | Standby with 30s failover timer, take over if lock holder dies |
 | Host process exits | Poll loop stops, lock released, all sessions disposed |
 | Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd/Task Scheduler restarts the host (if `/wechat install` was run) |
-| Machine reboots | Service auto-starts the host (if installed), poll loop resumes |
+| Machine reboots | macOS/Linux: service auto-starts at boot; Windows: service starts at user logon (if installed), poll loop resumes |
 | No boot service | Poll loop only runs while a host process is active |
 
 Logs: `~/.omp/logs/wechat.log` (poll loop) and `~/.omp/logs/rpc.log` (boot service stderr)
