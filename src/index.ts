@@ -14,7 +14,7 @@
  *   /wechat revoke <wxid> — revoke a user's authorization
  *   /wechat list     — list authorized users
  *   /wechat stop     — stop the poll loop
- *   /wechat install  — install boot-time launchd/systemd service
+ *   /wechat install  — install boot-time launchd/systemd/Task Scheduler service
  *   /wechat uninstall — remove boot-time service
  */
 import { login } from "./ilink/login.js";
@@ -212,8 +212,8 @@ export default function wechatExtension(pi: ExtensionAPI) {
             ctx.ui.notify(`Boot service installed (${r.platform}): ${r.path}`, "info");
             logger.info(
               `Service installed on ${r.platform} at ${r.path}\n` +
-                `OMP will run via launchd/systemd at boot. ` +
-                `Manage: ${r.platform === "darwin" ? "launchctl start|stop com.omp-wechat" : "sudo systemctl start|stop omp-wechat"}`,
+                `OMP will run via ${r.platform === "darwin" ? "launchd" : r.platform === "win32" ? "Task Scheduler" : "systemd"} at boot. ` +
+                `Manage: ${r.platform === "darwin" ? "launchctl start|stop com.omp-wechat" : r.platform === "win32" ? "schtasks /run|/end /tn OMP-Wechat" : "sudo systemctl start|stop omp-wechat"}`,
             );
           } catch (err) {
             ctx.ui.notify(`Install failed: ${err}`, "error");
