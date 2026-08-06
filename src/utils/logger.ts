@@ -38,7 +38,7 @@ function ts(): string {
   const off = -d.getTimezoneOffset(); // 分钟；UTC+8 → 480
   const sign = off >= 0 ? "+" : "-";
   const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
-  const tz = `${sign}${pad(Math.floor(off / 60))}:${pad(off % 60)}`;
+  const tz = `${sign}${pad(Math.trunc(off / 60))}:${pad(off % 60)}`;
   // toISOString() 返回 UTC，减去偏移得到本地时间的 ISO 表示，再带上本地时区
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().replace("Z", tz);
 }
