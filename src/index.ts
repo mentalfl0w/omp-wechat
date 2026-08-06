@@ -90,9 +90,10 @@ export default function wechatExtension(pi: ExtensionAPI) {
   if (daemonState.running) {
     logger.info("WeChat bridge started at extension load");
   } else {
-    // Not the lock holder — keep process alive and retry every 30s.
-    // If the lock holder crashes, this process will take over.
-    logger.debug("WeChat bridge: another instance holds the lock, starting failover watch");
+    // Not running (not logged in, or another instance holds the lock).
+    // Keep process alive and retry every 30s — picks up after /wechat login
+    // or takes over if the lock holder crashes.
+    logger.debug("WeChat bridge not running, starting 30s retry", { lastError: daemonState.lastError });
     setInterval(() => {
       if (daemonState?.running) return;
       daemonState = bridge!.start();

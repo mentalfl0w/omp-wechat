@@ -56,7 +56,7 @@ import { cleanupStaleSessions } from "./engine/session-store.js";
 export interface DaemonState {
   running: boolean;
   config: AppConfig;
-  creds: Credentials;
+  creds: Credentials | null;
   lastError: string | null;
 }
 
@@ -75,7 +75,17 @@ export class WeChatBridge {
   /** Start the poll loop. Idempotent — returns existing state if running. */
   start(): DaemonState {
     const config = loadConfig();
-    const creds = getCredentials();
+
+    // Gracefully handle not-logged-in: getCredentials() throws, but we
+    // must NOT crash here — the extension loads at boot time and
+    // /wechat login command must remain registered so the user can log in.
+    // The 30s failover retry in index.ts will pick up credentials after login.
+    let creds: Credentials;
+    try {
+      creds = getCredentials();
+    } catch (err) {
+      return { running: false, config, creds: null, lastError: String(err) };
+    }
 
     if (this.pollActive) {
       return this.state!;
