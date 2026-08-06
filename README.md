@@ -37,7 +37,7 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 - **Typing indicator**: native WeChat "Typing..." shown during AI processing
 - **Access control**: pairing / allowlist / disabled modes
 - **Long text chunking**: splits replies >2000 chars at paragraph/line/space boundaries
-- **Boot service**: optional launchd/systemd service for auto-start on boot
+- **Boot service**: optional launchd/systemd/Task Scheduler service for auto-start on boot
 
 ## Quick Start
 
@@ -78,10 +78,13 @@ To check status: `/wechat status`. To stop: `/wechat stop`.
 /wechat install
 ```
 
-Installs a launchd (macOS) or systemd (Linux) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot. A `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep the process alive (without an active RPC client, `omp --mode rpc` exits on idle stdin). `KeepAlive`/`Restart=always` handles crashes and reboots.
+Installs a launchd (macOS), systemd (Linux), or Task Scheduler (Windows) service that runs the host (`omp --mode rpc` or `pi --mode rpc`) at boot (macOS/Linux) or user logon (Windows). A `get_state` JSON-RPC heartbeat is piped to stdin every 5s to keep the process alive (without an active RPC client, `omp --mode rpc` exits on idle stdin). launchd `KeepAlive`/systemd `Restart=always`/PowerShell restart-loop handles crashes. On Windows, the task uses `/sc onlogon` (no admin required); the host starts when the user logs in, not at bare-metal boot.
 
 Logs: `~/.omp/logs/rpc.log` (stderr only; stdout discarded) and `~/.omp/logs/wechat.log` (poll loop)
-Manage: `launchctl start|stop com.omp-wechat` (macOS) or `sudo systemctl start|stop omp-wechat` (Linux)
+Manage:
+- macOS: `launchctl start|stop com.omp-wechat`
+- Linux: `sudo systemctl start|stop omp-wechat`
+- Windows: `schtasks /run|/end /tn OMP-Wechat`
 
 To remove: `/wechat uninstall`
 
@@ -123,7 +126,7 @@ systemPrompt: |
 | `/wechat revoke <wxid>` | Revoke a user's authorization |
 | `/wechat list` | List authorized users |
 | `/wechat stop` | Stop the poll loop |
-| `/wechat install` | Install boot-time launchd/systemd service |
+| `/wechat install` | Install boot-time launchd/systemd/Task Scheduler service |
 | `/wechat uninstall` | Remove boot-time service |
 
 ### Chat Commands (via WeChat message)
@@ -152,8 +155,8 @@ The logged-in user (who scanned the QR code) is automatically added to the allow
 | Host process starts | Poll loop starts at extension load time (acquires singleton lock) |
 | Other host processes | Standby with 30s failover timer, take over if lock holder dies |
 | Host process exits | Poll loop stops, lock released, all sessions disposed |
-| Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd restarts the host (if `/wechat install` was run) |
-| Machine reboots | Service auto-starts the host (if installed), poll loop resumes |
+| Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd/Task Scheduler restarts the host (if `/wechat install` was run) |
+| Machine reboots | macOS/Linux: service auto-starts at boot; Windows: service starts at user logon (if installed), poll loop resumes |
 | No boot service | Poll loop only runs while a host process is active |
 
 Logs: `~/.omp/logs/wechat.log` (poll loop) and `~/.omp/logs/rpc.log` (boot service stderr)
@@ -166,7 +169,7 @@ OMP-Wechat/
 ├── src/
 │   ├── index.ts              # OMP/Pi extension entry (extension load + /wechat commands)
 │   ├── bridge.ts             # In-process poll loop + message handling + singleton port lock
-│   ├── service.ts            # Boot-time launchd/systemd install
+│   ├── service.ts            # Boot-time launchd/systemd/Task Scheduler install
 │   ├── config.ts             # Config loading (config.yml + defaults)
 │   ├── ilink/
 │   │   ├── types.ts          # iLink Bot API type definitions
