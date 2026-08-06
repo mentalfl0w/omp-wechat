@@ -33,7 +33,14 @@ const rotatingLog = new RotatingLog({
 rotatingLog.cleanStale();
 
 function ts(): string {
-  return new Date().toISOString();
+  // 本地时区的 ISO 8601 格式（含时区偏移），跟随系统时区，不写死 +08:00
+  const d = new Date();
+  const off = -d.getTimezoneOffset(); // 分钟；UTC+8 → 480
+  const sign = off >= 0 ? "+" : "-";
+  const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
+  const tz = `${sign}${pad(Math.floor(off / 60))}:${pad(off % 60)}`;
+  // toISOString() 返回 UTC，减去偏移得到本地时间的 ISO 表示，再带上本地时区
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().replace("Z", tz);
 }
 
 function log(level: LogLevel, msg: string, meta?: unknown) {
