@@ -224,6 +224,8 @@ $logPath = Join-Path $env:USERPROFILE '.omp\\logs\\rpc.log'
 $logDir = Split-Path $logPath
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
 while ($true) {
+  $p = $null
+  $errTask = $null
   try {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $ompPath
