@@ -32,6 +32,9 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 - **Failover**: 30s timer takes over automatically if the lock holder crashes
 - **Bidirectional**: receive and reply to WeChat text messages
 - **Image recognition**: inbound images are downloaded from WeChat CDN, AES-decrypted, and passed to the vision model
+- **Inbound file content**: text files (`.txt/.md/.csv/.json/.py/…`) sent by the user are downloaded, decrypted, and their content is handed to the AI; binary files arrive as metadata placeholders
+- **Markdown stripping**: AI replies are stripped of markdown formatting before delivery — WeChat renders plain text only
+- **File delivery**: AI-generated files (documents, images, PDFs, spreadsheets, code…) written to a per-chat outbox directory are automatically uploaded to the WeChat CDN (AES-128-ECB encrypted) and sent back to the user as file/image messages
 - **Per-chat sessions**: each WeChat chat gets an independent AI session (concurrent, isolated)
 - **LRU pool**: caps memory usage by evicting least-recently-used sessions (default: 50)
 - **Typing indicator**: native WeChat "Typing..." shown during AI processing
@@ -110,10 +113,38 @@ systemPrompt: |
 | `model` | OMP default | Default model: role alias (`@smol`, `@slow`) or `provider/id` |
 | `cwd` | `process.cwd()` | Working directory for AI sessions — determines which project context (CLAUDE.md, .omp/) the agent loads |
 | `systemPrompt` | Built-in | System prompt for WeChat chat sessions |
+| `outboxDir` | `~/.omp-wechat/outbox` | Base directory for per-chat outboxes (see File Delivery below) |
+| `maxFileSizeMb` | `100` | Max file size delivered via WeChat, in MB |
+| `sendFiles` | `true` | Set to `false` to disable file delivery entirely |
 
 > **Model and tools are managed by OMP/Pi.** `createAgentSession()` automatically calls `discoverAuthStorage()`, reusing your existing `omp login` / `pi login` OAuth, `~/.omp/agent/agent.db` API keys, or `models.yml` config. This project never touches API keys.
 >
 > **Image recognition** requires a vision model role configured in OMP (e.g. `omp model role vision xfyun/xopkimik25`). If no vision role is set, inbound images are skipped — only the text placeholder is sent to the AI.
+
+## File Delivery
+
+Ask the AI to generate a file (report, PDF, spreadsheet, image, code, …) — the finished artifact is sent back to you as a WeChat file or image message automatically.
+
+### How it works
+
+1. Every chat gets a private **outbox directory**: `~/.omp-wechat/outbox/<wxid>/`
+2. The session's system prompt teaches the AI to write final deliverables there (and only there)
+3. When the AI finishes a turn, the plugin diffs the outbox and uploads every new/changed file:
+   - `getuploadurl` → CDN upload (AES-128-ECB encrypted) → `sendmessage` as a file item
+   - Images (`.png/.jpg/.jpeg/.gif/.webp/.bmp`) are auto-routed to image messages; everything else goes as a file
+4. Delivered files are removed from the outbox; failed or oversized files stay on disk and a text notice is sent instead
+
+### Example
+
+> **You**: Please generate a weekly report as a PDF
+> **AI**: *(writes `weekly-report.pdf` to the outbox)* Done — the report is attached.
+> **You** (WeChat): receives the text reply **plus** the `weekly-report.pdf` file
+
+### Limitations
+
+- Files are sent via `sendmessage` using the latest inbound `context_token`, same as text replies — an expired token (long-running task, restart) may fail delivery until you message again
+- Files larger than `maxFileSizeMb` are skipped with a text notice
+- Only files in the per-chat outbox are ever sent — the AI cannot exfiltrate arbitrary paths
 
 ## Slash Commands
 
@@ -174,9 +205,11 @@ OMP-Wechat/
 │   ├── ilink/
 │   │   ├── types.ts          # iLink Bot API type definitions
 │   │   ├── client.ts         # iLink API client (poll/send/typing)
+│   │   ├── upload.ts         # Outbound media: CDN upload + file/image send
+│   │   ├── cdn.ts            # CDN media download/upload + AES-128-ECB crypto
 │   │   └── login.ts          # QR code login flow
 │   ├── engine/
-│   │   ├── session.ts        # AI session creation + reply subscription
+│   │   ├── session.ts        # AI session creation + reply/outbox subscription
 │   │   └── pool.ts           # Session pool (LRU eviction, concurrency)
 │   ├── access/
 │   │   └── control.ts        # Access control (pairing/allowlist/disabled)
@@ -191,15 +224,17 @@ OMP-Wechat/
 
 ## Limitations
 
-- **Reply-only**: iLink requires `context_token` from an inbound message; you cannot initiate conversations
+- **Reply-only**: iLink requires `context_token` from an inbound message; you cannot initiate conversations (applies to text and file replies alike)
 - **1:1 only**: iLink Bot API does not support group chats
 - **Single instance**: iLink allows only one bot connection per account
-- **Media**: inbound images are downloaded from WeChat CDN, AES-decrypted, and passed to the vision model (if `modelRoles.vision` is configured); voice/video remain as placeholders
+- **Media**: inbound images and text files are fully processed (vision model / content extraction); voice (unless the server provides transcription) and video remain as placeholders
 
 ## Roadmap
 
 - [x] **Phase 2a**: Inbound image support (CDN download + AES decrypt + vision model)
 - [ ] **Phase 2b**: Voice transcription / video support
+- [x] **Phase 2c**: Outbound file delivery — AI-generated files sent back via WeChat (CDN upload + file/image messages)
+- [x] **Phase 2d**: Inbound file content extraction + markdown stripping for replies
 - [x] **Phase 3**: Persistent sessions — `SessionManager.continueRecent()` per chat, context survives restarts
 - [x] **Phase 4**: Per-chat model selection — `/model` `/models` chat commands for manual switching
 - [ ] **Phase 5**: Fine-grained permissions (per-user tool restrictions, bash approval via WeChat)
