@@ -14,6 +14,8 @@
  *   bridge.stop();    // from extension shutdown or /wechat stop
  */
 import { randomBytes } from "crypto";
+import { rmSync } from "fs";
+import { basename, extname } from "path";
 import { loadConfig } from "./config.js";
 import type { AppConfig } from "./config.js";
 import { chunkText } from "./utils/chunk.js";
@@ -28,9 +30,12 @@ import {
   saveSyncBuf,
   extractInboundText,
   extractInboundImages,
+  formatSize,
 } from "./ilink/client.js";
 import { downloadAndDecrypt } from "./ilink/cdn.js";
-import type { InboundMessage, Credentials, TextItem } from "./ilink/types.js";
+import { uploadAndSendFile } from "./ilink/upload.js";
+import type { InboundMessage, Credentials, TextItem, FileItem } from "./ilink/types.js";
+import { stripMarkdown } from "./utils/markdown.js";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
   gate,
@@ -50,6 +55,16 @@ const RETRY_MS = 2_000;
 const MAX_SEND_RETRIES = 2;
 const CHUNK_LIMIT = 2000;
 const LOCK_PORT = 19821;
+const FILE_TEXT_LIMIT = 10_000;
+
+/** Extensions whose content is extracted and sent to the AI as text. */
+const TEXT_FILE_EXTENSIONS: Record<string, true> = {
+  ".txt": true, ".md": true, ".csv": true, ".json": true, ".xml": true,
+  ".html": true, ".yaml": true, ".yml": true, ".toml": true, ".log": true,
+  ".py": true, ".js": true, ".jsx": true, ".ts": true, ".tsx": true,
+  ".go": true, ".rs": true, ".java": true, ".c": true, ".cpp": true,
+  ".h": true, ".sh": true, ".bash": true, ".sql": true, ".css": true,
+};
 
 import { cleanupStaleSessions } from "./engine/session-store.js";
 
@@ -106,7 +121,14 @@ export class WeChatBridge {
       });
     };
 
-    this.pool = new SessionPool(config.maxSessions, replyHandler);
+    // File handler: AI-written outbox files → upload + send via WeChat
+    const fileHandler = (chatId: string, files: string[]) => {
+      this.sendFiles(creds, chatId, files).catch((err: unknown) => {
+        logger.error(`[${chatId}] File delivery failed:`, err);
+      });
+    };
+
+    this.pool = new SessionPool(config.maxSessions, replyHandler, fileHandler);
     this.state = { running: true, config, creds, lastError: null };
 
     logger.info("OMP-Wechat poll loop starting", {
@@ -295,7 +317,9 @@ export class WeChatBridge {
       if (!text && !hasImages) return;
 
       const images = await this.downloadImages(creds, msg, senderId);
-      await session.prompt(text, images);
+      const fileTexts = await this.downloadFileTexts(creds, msg, senderId);
+      const fullText = [text, ...fileTexts].filter(Boolean).join("\n\n");
+      await session.prompt(fullText, images);
     } catch (err: unknown) {
       logger.error(`[${senderId}] prompt failed:`, err);
       await this.sendReply(creds, senderId, "Processing failed, please try again.");
@@ -353,6 +377,96 @@ export class WeChatBridge {
     return results;
   }
 
+  /**
+   * Upload + send AI-written outbox files to a WeChat user.
+   * Delivered files are removed from the outbox; failures keep the file
+   * on disk (a later identical file won't re-trigger, since the snapshot
+   * diff compares size+mtime) and notify the user via text.
+   */
+  private async sendFiles(creds: Credentials, chatId: string, files: string[]): Promise<void> {
+    const contextToken = this.pool?.getContextToken(chatId) ?? "";
+    if (!contextToken) {
+      logger.warn(`[${chatId}] No context_token, cannot send files`);
+      return;
+    }
+
+    const config = loadConfig();
+    const maxBytes = (config.maxFileSizeMb ?? 100) * 1024 * 1024;
+
+    for (const filePath of files) {
+      const result = await uploadAndSendFile(creds, chatId, contextToken, filePath, maxBytes);
+      switch (result.status) {
+        case "sent":
+          logger.info(`[${chatId}] Delivered: ${filePath}`);
+          try {
+            rmSync(filePath, { force: true });
+          } catch (err) {
+            logger.warn(`[${chatId}] Could not remove delivered file ${filePath}:`, err);
+          }
+          break;
+        case "too-large":
+          logger.warn(`[${chatId}] File too large, skipped: ${filePath}`);
+          await this.sendReply(
+            creds,
+            chatId,
+            `[File not sent: ${basename(filePath)} exceeds ${Math.round(result.maxBytes / 1024 / 1024)}MB limit]`,
+          );
+          break;
+        case "error":
+          logger.error(`[${chatId}] File send failed: ${filePath}: ${result.error}`);
+          await this.sendReply(
+            creds,
+            chatId,
+            `[File delivery failed: ${basename(filePath)} — ${result.error}]`,
+          );
+          break;
+      }
+    }
+  }
+
+  /**
+   * Download inbound file items and extract their content when the file
+   * is text (by extension). Binary files stay as the placeholder emitted
+   * by extractInboundText. Non-fatal — failures degrade to the placeholder.
+   */
+  private async downloadFileTexts(
+    _creds: Credentials,
+    msg: InboundMessage,
+    chatId: string,
+  ): Promise<string[]> {
+    const items = (msg.item_list ?? []).filter(
+      (item): item is FileItem => item.type === 4,
+    );
+    if (items.length === 0) return [];
+
+    const results: string[] = [];
+    for (const item of items) {
+      const file = item.file_item;
+      const name = file.file_name ?? "unknown";
+      if (!TEXT_FILE_EXTENSIONS[extname(name).toLowerCase()]) continue;
+
+      const buf = await downloadAndDecrypt(
+        file.media?.encrypt_query_param,
+        file.media?.full_url,
+        undefined, // files carry the key as media.aes_key (base64), not aeskey hex
+        file.media?.aes_key,
+        `file[${chatId}]`,
+      );
+      if (!buf) continue;
+
+      const len = parseInt(file.len ?? "", 10);
+      const text = buf.toString("utf-8");
+      const truncated = text.length > FILE_TEXT_LIMIT
+        ? `${text.slice(0, FILE_TEXT_LIMIT)}\n... [truncated]`
+        : text;
+      results.push(
+        `[File: ${name}${Number.isFinite(len) && len > 0 ? ` (${formatSize(len)})` : ""}]\n\n\`\`\`\n${truncated}\n\`\`\``,
+      );
+      logger.info(`[${chatId}] Extracted text from file: ${name} (${buf.length} bytes)`);
+    }
+    return results;
+  }
+
   private async sendReply(creds: Credentials, chatId: string, text: string): Promise<void> {
     const contextToken = this.pool?.getContextToken(chatId) ?? "";
     if (!contextToken) {
@@ -360,7 +474,8 @@ export class WeChatBridge {
       return;
     }
 
-    const chunks = chunkText(text, CHUNK_LIMIT);
+    // WeChat doesn't render markdown — strip formatting before chunking
+    const chunks = chunkText(stripMarkdown(text), CHUNK_LIMIT);
 
     for (const chunk of chunks) {
       // One client_id per chunk, reused across retries — lets the server

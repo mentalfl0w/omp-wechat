@@ -20,10 +20,16 @@ export class SessionPool {
   private pool = new Map<string, ChatSession>();
   private maxSessions: number;
   private replyHandler: (chatId: string, text: string) => void;
+  private fileHandler: (chatId: string, files: string[]) => void;
 
-  constructor(maxSessions: number, replyHandler: (chatId: string, text: string) => void) {
+  constructor(
+    maxSessions: number,
+    replyHandler: (chatId: string, text: string) => void,
+    fileHandler: (chatId: string, files: string[]) => void,
+  ) {
     this.maxSessions = maxSessions;
     this.replyHandler = replyHandler;
+    this.fileHandler = fileHandler;
   }
 
   setMaxSessions(n: number): void {
@@ -43,7 +49,7 @@ export class SessionPool {
       this.evictOldest();
     }
 
-    entry = await ChatSession.create(chatId, contextToken, config, this.replyHandler);
+    entry = await ChatSession.create(chatId, contextToken, config, this.replyHandler, this.fileHandler);
     this.pool.set(chatId, entry);
     return entry;
   }

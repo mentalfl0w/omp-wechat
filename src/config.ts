@@ -22,6 +22,16 @@ export interface AppConfig {
    * Defaults to process.cwd() if not set.
    */
   cwd?: string;
+  /**
+   * Base directory for per-chat outboxes. Files the AI writes there
+   * are automatically sent back to the user via WeChat.
+   * Defaults to ~/.omp-wechat/outbox.
+   */
+  outboxDir?: string;
+  /** Max file size for WeChat delivery, in MB. Default: 100. */
+  maxFileSizeMb?: number;
+  /** Whether AI-written outbox files are delivered. Default: true. */
+  sendFiles?: boolean;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI assistant chatting with users via WeChat.
@@ -52,6 +62,12 @@ export function loadConfig(): AppConfig {
       if (parsed.model) config.model = parsed.model;
       if (parsed.cwd) config.cwd = expandTilde(parsed.cwd);
       if (parsed.systemPrompt) config.systemPrompt = parsed.systemPrompt;
+      if (parsed.outboxDir) config.outboxDir = expandTilde(parsed.outboxDir);
+      if (parsed.maxFileSizeMb) {
+        const mb = parseInt(parsed.maxFileSizeMb, 10);
+        if (Number.isFinite(mb) && mb > 0) config.maxFileSizeMb = mb;
+      }
+      if (parsed.sendFiles === "false") config.sendFiles = false;
     }
   } catch (err) {
     logger.warn("Failed to load config.yml, using defaults", err);
