@@ -129,3 +129,45 @@ export interface GetConfigResponse {
   errmsg?: string;
   typing_ticket?: string;
 }
+
+// ── Outbound media (CDN upload + send) ────────────────────────────────
+
+/** Media category for CDN upload (getuploadurl media_type). */
+export enum MediaType {
+  IMAGE = 1,
+  VIDEO = 2,
+  FILE = 3,
+  VOICE = 4,
+}
+
+/** CDN media reference for an outbound message item (post-upload). */
+export interface UploadedMedia {
+  encrypt_query_param: string;
+  /** AES key as base64 of raw 16 bytes */
+  aes_key: string;
+  /** 1 = AES-128-ECB */
+  encrypt_type?: 0 | 1;
+  /** Server-provided direct download URL */
+  full_url?: string;
+}
+
+/** getuploadurl request body (media fields; base_info added by caller). */
+export interface GetUploadUrlRequest {
+  filekey: string;
+  media_type: MediaType;
+  to_user_id: string;
+  rawsize: number;
+  rawfilemd5: string;
+  filesize: number;
+  no_need_thumb?: boolean;
+  /** AES key as 32-char hex string */
+  aeskey?: string;
+}
+
+/** getuploadurl response. */
+export interface GetUploadUrlResponse {
+  upload_param: string;
+  thumb_upload_param?: string;
+  /** Complete upload URL; when present use directly instead of building from upload_param. */
+  upload_full_url?: string;
+}

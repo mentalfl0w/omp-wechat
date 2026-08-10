@@ -65,7 +65,7 @@ function buildHeaders(token: string): Record<string, string> {
   };
 }
 
-async function apiFetch(
+export async function apiFetch(
   creds: Credentials,
   endpoint: string,
   body: object,
@@ -237,6 +237,13 @@ export function saveSyncBuf(buf: string): void {
   writeFileSync(SYNC_BUF_FILE, buf);
 }
 
+/** Format a byte count as a human-readable size (e.g. 1.2MB). */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 // --- Inbound message text extraction ---
 
 export function extractInboundText(msg: InboundMessage, includeImagePlaceholder = true): string {
@@ -256,7 +263,13 @@ export function extractInboundText(msg: InboundMessage, includeImagePlaceholder 
         parts.push(item.voice_item?.text ?? "(voice)");
         break;
       case 4:
-        parts.push(`(file: ${item.file_item?.file_name ?? "unknown"})`);
+        // Enriched with size; text content itself is downloaded separately
+        // (see bridge.downloadFileTexts) so binary files stay a placeholder.
+        {
+          const name = item.file_item?.file_name ?? "unknown";
+          const len = parseInt(item.file_item?.len ?? "", 10);
+          parts.push(`(file: ${name}${Number.isFinite(len) && len > 0 ? ", " + formatSize(len) : ""})`);
+        }
         break;
       case 5:
         parts.push("(video)");

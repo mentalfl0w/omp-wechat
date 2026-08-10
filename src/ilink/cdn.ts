@@ -8,7 +8,7 @@
  *
  * CDN URLs need no auth — they're pre-signed via `encrypted_query_param`.
  */
-import { createDecipheriv } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { logger } from "../utils/logger.js";
 
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -39,9 +39,20 @@ export function parseAesKey(
 }
 
 /** Decrypt AES-128-ECB ciphertext with PKCS7 padding. */
-function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
+export function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
   const decipher = createDecipheriv("aes-128-ecb", key, null);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+/** Encrypt plaintext with AES-128-ECB + PKCS7 padding (for CDN upload). */
+export function encryptAesEcb(plaintext: Buffer, key: Buffer): Buffer {
+  const cipher = createCipheriv("aes-128-ecb", key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+/** Generate a random 16-byte AES key for CDN upload encryption. */
+export function generateAesKey(): Buffer {
+  return randomBytes(16);
 }
 
 /**
