@@ -8,7 +8,7 @@ import type { ChatCommand, ChatCommandInvocation, ChatCommandContext } from "./r
 
 class NewSessionInvocation implements ChatCommandInvocation {
   async execute(ctx: ChatCommandContext): Promise<string> {
-    await ctx.pool.resetSession(ctx.chatId);
+    await ctx.pool.resetSession(ctx.chatId, ctx.config);
     return "Session reset. Your next message starts a fresh conversation.";
   }
 }

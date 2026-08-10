@@ -66,7 +66,7 @@ const TEXT_FILE_EXTENSIONS: Record<string, true> = {
   ".h": true, ".sh": true, ".bash": true, ".sql": true, ".css": true,
 };
 
-import { cleanupStaleSessions } from "./engine/session-store.js";
+import { cleanupStaleSessions, cleanupStaleOutboxes } from "./engine/session-store.js";
 
 export interface DaemonState {
   running: boolean;
@@ -145,12 +145,16 @@ export class WeChatBridge {
       this.releaseLock();
     });
 
-    // Cleanup stale session directories. Run immediately on start so
+    // Cleanup stale session + outbox directories. Run immediately on start so
     // it always fires even if OMP kills this process within seconds
     // (observed ~10s restart cycle). The periodic timer handles the
     // long-lived case (boot-service process that survives for hours).
     cleanupStaleSessions();
-    this.cleanupTimer = setInterval(() => cleanupStaleSessions(), 6 * 60 * 60 * 1000);
+    cleanupStaleOutboxes(config.outboxDir);
+    this.cleanupTimer = setInterval(() => {
+      cleanupStaleSessions();
+      cleanupStaleOutboxes(config.outboxDir);
+    }, 6 * 60 * 60 * 1000);
 
     return this.state;
   }

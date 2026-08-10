@@ -8,7 +8,7 @@ import type { AppConfig } from "../config.js";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "../utils/logger.js";
 import { ChatSession } from "./session.js";
-import { removeSessionDir } from "./session-store.js";
+import { removeSessionDir, removeOutboxDir } from "./session-store.js";
 
 export interface PoolStatus {
   count: number;
@@ -72,7 +72,7 @@ export class SessionPool {
   }
 
   /** Dispose and remove a session so the next message creates a fresh one. */
-  async resetSession(chatId: string): Promise<void> {
+  async resetSession(chatId: string, config: AppConfig): Promise<void> {
     const entry = this.pool.get(chatId);
     if (entry) {
       await entry.dispose();
@@ -82,6 +82,9 @@ export class SessionPool {
     // SessionManager.continueRecent() on the next ensure() would
     // resume the session we just disposed, defeating /new.
     removeSessionDir(chatId);
+    // A fresh session starts with a clean slate: generated files from
+    // the previous session are discarded with its context.
+    removeOutboxDir(chatId, config.outboxDir);
   }
 
   /** Get the latest context_token for a chat. */

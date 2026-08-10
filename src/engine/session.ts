@@ -10,22 +10,9 @@ import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent"
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AppConfig } from "../config.js";
 import { logger } from "../utils/logger.js";
-import { sessionDirFor, ensureSessionsDir } from "./session-store.js";
+import { sessionDirFor, ensureSessionsDir, outboxDirFor } from "./session-store.js";
 import { mkdirSync, readdirSync, statSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
-
-const DEFAULT_OUTBOX_BASE = join(homedir(), ".omp-wechat", "outbox");
-
-/** Filesystem-safe per-chat directory name (dots excluded — ".." must not escape the outbox base). */
-function sanitizeChatId(chatId: string): string {
-  return chatId.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
-
-/** Per-chat outbox directory — files written here are delivered to the user. */
-export function outboxDirFor(chatId: string, config: AppConfig): string {
-  return join(config.outboxDir ?? DEFAULT_OUTBOX_BASE, sanitizeChatId(chatId));
-}
 
 /** System-prompt block teaching the AI how to deliver files via WeChat. */
 function outboxInstructions(outboxDir: string): string {
@@ -100,7 +87,7 @@ export class ChatSession {
   ): Promise<ChatSession> {
     logger.info(`Creating session: ${chatId}`);
 
-    const outboxDir = outboxDirFor(chatId, config);
+    const outboxDir = outboxDirFor(chatId, config.outboxDir);
     const sendFilesEnabled = config.sendFiles !== false;
     if (sendFilesEnabled) {
       try {
