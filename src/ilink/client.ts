@@ -31,6 +31,14 @@ const SYNC_BUF_FILE = join(STATE_DIR, "sync_buf.txt");
  */
 export const CHANNEL_VERSION = "2.2.0";
 
+/** UA-style client identifier sent in base_info.bot_agent (official SDK sends "WeChatBot/<version>"). */
+const BOT_AGENT = "OMP-Wechat/1.7.0";
+
+/** Shared base_info for every iLink request. */
+export function baseInfo(): { channel_version: string; bot_agent: string } {
+  return { channel_version: CHANNEL_VERSION, bot_agent: BOT_AGENT };
+}
+
 // --- Credential management ---
 
 export function loadCredentials(): Credentials | null {
@@ -132,7 +140,7 @@ export async function getUpdates(
       "ilink/bot/getupdates",
       {
         get_updates_buf: buf,
-        base_info: { channel_version: CHANNEL_VERSION },
+        base_info: baseInfo(),
       },
       35000,
     );
@@ -170,7 +178,7 @@ export async function sendMessage(
         item_list: [{ type: 1, text_item: { text } }],
         context_token: contextToken,
       },
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
     },
     15000,
   );
@@ -194,7 +202,7 @@ async function ensureTypingTicket(
       "ilink/bot/getconfig",
       {
         ilink_user_id: userId,
-        base_info: { channel_version: CHANNEL_VERSION },
+        base_info: baseInfo(),
       },
       15000,
     );
@@ -233,7 +241,7 @@ export async function sendTyping(
         typing_ticket: ticket,
         // Field is `status` in the official SDK (1 = show, 2 = cancel)
         status: command,
-        base_info: { channel_version: CHANNEL_VERSION },
+        base_info: baseInfo(),
       },
       10000,
     );

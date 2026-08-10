@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "crypto";
 import { readFileSync, statSync } from "fs";
 import { basename, extname } from "path";
 import { logger } from "../utils/logger.js";
-import { apiFetch, CHANNEL_VERSION } from "./client.js";
+import { apiFetch, CHANNEL_VERSION, baseInfo } from "./client.js";
 import { encryptAesEcb, generateAesKey } from "./cdn.js";
 import type {
   Credentials,
@@ -91,7 +91,7 @@ export async function uploadAndSendFile(
         filesize: ciphertext.length,
         no_need_thumb: true,
         aeskey: aesKey.toString("hex"),
-        base_info: { channel_version: CHANNEL_VERSION },
+        base_info: baseInfo(),
       },
       15000,
     ) as GetUploadUrlResponse;
@@ -145,7 +145,11 @@ export async function uploadAndSendFile(
 
     const media: UploadedMedia = {
       encrypt_query_param: encryptQueryParam,
-      aes_key: aesKey.toString("base64"),
+      // Format B: base64(hex string) — the encoding the WeChat client
+      // expects (official SDK: Buffer.from(key.toString('hex')).toString('base64')).
+      // Format A (base64 of raw bytes) made the client fail to decrypt:
+      // sendmessage returned ret=0 but the file was silently dropped.
+      aes_key: Buffer.from(aesKey.toString("hex"), "utf8").toString("base64"),
       encrypt_type: 1,
     };
 
@@ -160,7 +164,6 @@ export async function uploadAndSendFile(
           file_item: {
             media,
             file_name: fileName,
-            md5: rawMd5,
             len: String(data.length),
           },
         };
@@ -182,7 +185,7 @@ export async function uploadAndSendFile(
               item_list: [item],
               context_token: contextToken,
             },
-            base_info: { channel_version: CHANNEL_VERSION },
+            base_info: baseInfo(),
           },
           15000,
         );
