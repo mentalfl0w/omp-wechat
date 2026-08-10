@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "crypto";
 import { readFileSync, statSync } from "fs";
 import { basename, extname } from "path";
 import { logger } from "../utils/logger.js";
-import { apiFetch } from "./client.js";
+import { apiFetch, CHANNEL_VERSION } from "./client.js";
 import { encryptAesEcb, generateAesKey } from "./cdn.js";
 import type {
   Credentials,
@@ -91,7 +91,7 @@ export async function uploadAndSendFile(
         filesize: ciphertext.length,
         no_need_thumb: true,
         aeskey: aesKey.toString("hex"),
-        base_info: { channel_version: "0.1.0" },
+        base_info: { channel_version: CHANNEL_VERSION },
       },
       15000,
     ) as GetUploadUrlResponse;
@@ -182,7 +182,7 @@ export async function uploadAndSendFile(
               item_list: [item],
               context_token: contextToken,
             },
-            base_info: { channel_version: "0.1.0" },
+            base_info: { channel_version: CHANNEL_VERSION },
           },
           15000,
         );

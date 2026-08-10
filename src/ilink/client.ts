@@ -20,6 +20,17 @@ const STATE_DIR = join(homedir(), ".omp-wechat");
 const CREDENTIALS_FILE = join(STATE_DIR, "credentials.json");
 const SYNC_BUF_FILE = join(STATE_DIR, "sync_buf.txt");
 
+/**
+ * Channel version declared to the iLink server.
+ *
+ * This is the PROTOCOL baseline this project implements — it must track
+ * the official iLink SDK (corespeed-io/wechatbot), not this package's
+ * own version. Currently implements the wire protocol of the official
+ * SDK v2.2.0; bump when adopting a newer official release. Older values
+ * (0.1.0) accepted text but rejected media messages server-side.
+ */
+export const CHANNEL_VERSION = "2.2.0";
+
 // --- Credential management ---
 
 export function loadCredentials(): Credentials | null {
@@ -92,7 +103,17 @@ export async function apiFetch(
     clearTimeout(timer);
     const text = await res.text();
     if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${text}`);
-    return JSON.parse(text);
+    const data = JSON.parse(text) as Record<string, unknown>;
+    // iLink business-level errors come back as HTTP 200 with ret/errcode
+    // set — without this check failures were silently treated as success.
+    const ret = typeof data.ret === "number" ? data.ret : undefined;
+    const errcode = typeof data.errcode === "number" ? data.errcode : undefined;
+    if ((ret !== undefined && ret !== 0) || (errcode !== undefined && errcode !== 0)) {
+      const code = errcode ?? ret ?? 0;
+      const errmsg = typeof data.errmsg === "string" ? data.errmsg : "";
+      throw new Error(`${endpoint} error ret=${ret} errcode=${errcode}${errmsg ? `: ${errmsg}` : ""} (code ${code})`);
+    }
+    return data;
   } catch (err) {
     clearTimeout(timer);
     throw err;
@@ -111,7 +132,7 @@ export async function getUpdates(
       "ilink/bot/getupdates",
       {
         get_updates_buf: buf,
-        base_info: { channel_version: "0.1.0" },
+        base_info: { channel_version: CHANNEL_VERSION },
       },
       35000,
     );
@@ -149,7 +170,7 @@ export async function sendMessage(
         item_list: [{ type: 1, text_item: { text } }],
         context_token: contextToken,
       },
-      base_info: { channel_version: "0.1.0" },
+      base_info: { channel_version: CHANNEL_VERSION },
     },
     15000,
   );
@@ -173,7 +194,7 @@ async function ensureTypingTicket(
       "ilink/bot/getconfig",
       {
         ilink_user_id: userId,
-        base_info: { channel_version: "2.0.1" },
+        base_info: { channel_version: CHANNEL_VERSION },
       },
       15000,
     );
@@ -209,10 +230,10 @@ export async function sendTyping(
       "ilink/bot/sendtyping",
       {
         ilink_user_id: userId,
-        to_user_id: userId,
         typing_ticket: ticket,
-        command,
-        base_info: { channel_version: "2.0.1" },
+        // Field is `status` in the official SDK (1 = show, 2 = cancel)
+        status: command,
+        base_info: { channel_version: CHANNEL_VERSION },
       },
       10000,
     );
