@@ -17,9 +17,9 @@ import { join } from "path";
 
 const DEFAULT_OUTBOX_BASE = join(homedir(), ".omp-wechat", "outbox");
 
-/** Filesystem-safe per-chat directory name. */
+/** Filesystem-safe per-chat directory name (dots excluded — ".." must not escape the outbox base). */
 function sanitizeChatId(chatId: string): string {
-  return chatId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return chatId.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 /** Per-chat outbox directory — files written here are delivered to the user. */
