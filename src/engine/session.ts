@@ -5,7 +5,6 @@
  * Each WeChat chat gets one ChatSession instance; the SessionPool owns
  * the lifecycle (create / evict / dispose).
  */
-import { createAgentSession, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AppConfig } from "../config.js";
@@ -13,6 +12,31 @@ import { logger } from "../utils/logger.js";
 import { sessionDirFor, ensureSessionsDir, outboxDirFor } from "./session-store.js";
 import { mkdirSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+
+/**
+ * Cross-runtime SDK resolution:
+ *   - OMP (Bun binary): resolves `@oh-my-pi/pi-coding-agent` from the host's
+ *     bundled module graph — first branch hits.
+ *   - Pi (Node/jiti): `@oh-my-pi/*` is NOT in Pi's alias table, so the first
+ *     import throws MODULE_NOT_FOUND; we fall back to the upstream package
+ *     name, which Pi aliases to its bundled SDK. Same API surface (lineage).
+ * No extra dependency is declared — both specifiers are external at build
+ * time and resolved by whichever host loads the artifact.
+ */
+type SdkModule = typeof import("@oh-my-pi/pi-coding-agent");
+let sdkPromise: Promise<SdkModule> | null = null;
+
+function loadSdk(): Promise<SdkModule> {
+  sdkPromise ??= (async () => {
+    try {
+      return await import("@oh-my-pi/pi-coding-agent");
+    } catch {
+      // Resolved at runtime under Pi; types come from src/types/earendil-pi.d.ts.
+      return (await import("@earendil-works/pi-coding-agent")) as SdkModule;
+    }
+  })();
+  return sdkPromise;
+}
 
 /** System-prompt block teaching the AI how to deliver files via WeChat. */
 function outboxInstructions(outboxDir: string): string {
@@ -102,13 +126,14 @@ export class ChatSession {
     // resumes the last session if one exists, or creates a new one.
     ensureSessionsDir();
     const sessionDir = sessionDirFor(chatId);
-    const sessionManager = await SessionManager.continueRecent(
+    const sdk = await loadSdk();
+    const sessionManager = await sdk.SessionManager.continueRecent(
       config.cwd || process.cwd(),
       sessionDir,
     );
     logger.info(`Session dir: ${sessionDir} (resumed=${sessionManager.getSessionFile() !== null})`);
 
-    const { session, modelFallbackMessage } = await createAgentSession({
+    const { session, modelFallbackMessage } = await sdk.createAgentSession({
       sessionManager,
       enableMCP: false,
       enableLsp: false,

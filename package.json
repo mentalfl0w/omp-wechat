@@ -9,7 +9,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules --external '@oh-my-pi/*'",
+    "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules --external '@oh-my-pi/*' --external '@earendil-works/*'",
     "typecheck": "tsc --noEmit"
   },
   "omp": {
