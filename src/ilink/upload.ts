@@ -12,6 +12,7 @@ import { createHash, randomBytes } from "crypto";
 import { readFileSync, statSync } from "fs";
 import { basename, extname } from "path";
 import { logger } from "../utils/logger.js";
+import { sleep } from "../utils/runtime-compat.js";
 import { apiFetch, CHANNEL_VERSION, baseInfo } from "./client.js";
 import { encryptAesEcb, generateAesKey } from "./cdn.js";
 import type {
@@ -132,7 +133,7 @@ export async function uploadAndSendFile(
         lastError = err;
         if (attempt < UPLOAD_MAX_RETRIES) {
           logger.warn(`CDN upload attempt ${attempt}/${UPLOAD_MAX_RETRIES} failed, retrying:`, err);
-          await Bun.sleep(1000 * attempt);
+          await sleep(1000 * attempt);
         }
       }
     }
@@ -195,7 +196,7 @@ export async function uploadAndSendFile(
         lastSendError = err;
         if (attempt < SEND_MAX_RETRIES) {
           logger.warn(`Send retry ${attempt + 1}/${SEND_MAX_RETRIES}:`, err);
-          await Bun.sleep(1000 * (attempt + 1));
+          await sleep(1000 * (attempt + 1));
         }
       }
     }

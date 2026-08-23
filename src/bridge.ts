@@ -21,6 +21,7 @@ import type { AppConfig } from "./config.js";
 import { chunkText } from "./utils/chunk.js";
 import { makeDedupKey, isDuplicate } from "./utils/dedup.js";
 import { logger } from "./utils/logger.js";
+import { sleep, listenPort, type LockServer } from "./utils/runtime-compat.js";
 import {
   getCredentials,
   getUpdates,
@@ -78,7 +79,7 @@ export interface DaemonState {
 export class WeChatBridge {
   private state: DaemonState | null = null;
   private pollActive = false;
-  private lockServer: { stop: (closeActive?: boolean) => void } | null = null;
+  private lockServer: LockServer | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private pool: SessionPool | null = null;
   private commands = new CommandRegistry();
@@ -88,7 +89,7 @@ export class WeChatBridge {
   }
 
   /** Start the poll loop. Idempotent — returns existing state if running. */
-  start(): DaemonState {
+  async start(): Promise<DaemonState> {
     const config = loadConfig();
 
     // Gracefully handle not-logged-in: getCredentials() throws, but we
@@ -106,7 +107,7 @@ export class WeChatBridge {
       return this.state!;
     }
 
-    if (!this.acquireLock()) {
+    if (!(await this.acquireLock())) {
       logger.debug("Another poll loop is running (port lock held), skipping");
       return { running: false, config, creds, lastError: "another instance running" };
     }
@@ -177,15 +178,9 @@ export class WeChatBridge {
     return this.pool?.getPoolStatus() ?? { count: 0, max: 0, chats: [] };
   }
 
-  private acquireLock(): boolean {
+  private async acquireLock(): Promise<boolean> {
     try {
-      this.lockServer = Bun.serve({
-        port: LOCK_PORT,
-        hostname: "127.0.0.1",
-        fetch() {
-          return new Response("ok");
-        },
-      });
+      this.lockServer = await listenPort(LOCK_PORT);
       return true;
     } catch {
       return false;
@@ -194,7 +189,7 @@ export class WeChatBridge {
 
   private releaseLock(): void {
     if (this.lockServer) {
-      this.lockServer.stop(true);
+      this.lockServer.stop();
       this.lockServer = null;
     }
   }
@@ -215,9 +210,9 @@ export class WeChatBridge {
           );
           if (failures >= MAX_FAILURES) {
             failures = 0;
-            await Bun.sleep(BACKOFF_MS);
+            await sleep(BACKOFF_MS);
           } else {
-            await Bun.sleep(RETRY_MS);
+            await sleep(RETRY_MS);
           }
           continue;
         }
@@ -241,9 +236,9 @@ export class WeChatBridge {
         logger.error(`Poll error (${failures}/${MAX_FAILURES}):`, err);
         if (failures >= MAX_FAILURES) {
           failures = 0;
-          await Bun.sleep(BACKOFF_MS);
+          await sleep(BACKOFF_MS);
         } else {
-          await Bun.sleep(RETRY_MS);
+          await sleep(RETRY_MS);
         }
       }
     }
@@ -497,7 +492,7 @@ export class WeChatBridge {
             return;
           }
           logger.warn(`[${chatId}] Send retry ${retries}/${MAX_SEND_RETRIES}:`, err);
-          await Bun.sleep(1000 * retries);
+          await sleep(1000 * retries);
         }
       }
     }

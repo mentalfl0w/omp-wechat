@@ -75,17 +75,17 @@ let daemonState: DaemonState | null = null;
 // Extension factory
 // ═══════════════════════════════════════════════════════════════════════════
 
-export default function wechatExtension(pi: ExtensionAPI) {
+export default async function wechatExtension(pi: ExtensionAPI) {
   if (pi.pi && typeof pi.setLabel === "function") {
     pi.setLabel("OMP-Wechat Bridge");
   }
 
   // Start the poll loop at extension load time — don't wait for session_start.
   // In rpc mode, session_start never fires (no RPC client), but the extension
-  // IS loaded. bridge.start() spins up Bun.serve (port lock) + pollLoop (long-poll
+  // IS loaded. bridge.start() spins up the port lock + pollLoop (long-poll
   // fetch), both of which keep the event loop busy — the process stays alive.
   bridge = new WeChatBridge();
-  daemonState = bridge.start();
+  daemonState = await bridge.start();
 
   if (daemonState.running) {
     logger.info("WeChat bridge started at extension load");
@@ -94,20 +94,29 @@ export default function wechatExtension(pi: ExtensionAPI) {
     // Keep process alive and retry every 30s — picks up after /wechat login
     // or takes over if the lock holder crashes.
     logger.debug("WeChat bridge not running, starting 30s retry", { lastError: daemonState.lastError });
-    setInterval(() => {
+    setInterval(async () => {
       if (daemonState?.running) return;
-      daemonState = bridge!.start();
+      try {
+        daemonState = await bridge!.start();
+      } catch (err) {
+        logger.error("WeChat bridge restart failed:", err);
+        return;
+      }
       if (daemonState.running) {
         logger.info("WeChat bridge: took over from failed instance");
       }
     }, 30_000);
   }
-
   pi.on("session_start", async (_event, ctx) => {
     // Poll loop is already running from extension load.
     // If it was stopped (e.g. via /wechat stop), try to restart.
     if (bridge && !daemonState?.running) {
-      daemonState = bridge.start();
+      try {
+        daemonState = await bridge.start();
+      } catch (err) {
+        logger.error("WeChat bridge start failed:", err);
+        return;
+      }
       if (daemonState.running) {
         ctx.ui.notify("WeChat bridge started", "info");
       }

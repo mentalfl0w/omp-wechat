@@ -13,6 +13,7 @@ import { platform, homedir } from "os";
 import { join, basename } from "path";
 import { existsSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { logger } from "./utils/logger.js";
+import { spawnSync } from "./utils/runtime-compat.js";
 
 const PLIST_LABEL = "com.omp-wechat";
 const SERVICE_NAME = "omp-wechat";
@@ -93,17 +94,17 @@ function installLaunchd(): void {
 
   const plist = plistPath();
   if (existsSync(plist)) {
-    Bun.spawnSync(["launchctl", "unload", plist], { stderr: "ignore" });
+    spawnSync(["launchctl", "unload", plist], { stderr: "ignore" });
   }
 
   writeFileSync(plist, generatePlist());
 
-  const result = Bun.spawnSync(["launchctl", "load", plist], { stderr: "inherit" });
+  const result = spawnSync(["launchctl", "load", plist], { stderr: "inherit" });
   if (result.exitCode !== 0) {
     throw new Error("launchctl load failed");
   }
 
-  Bun.spawnSync(["launchctl", "start", PLIST_LABEL], { stderr: "inherit" });
+  spawnSync(["launchctl", "start", PLIST_LABEL], { stderr: "inherit" });
 }
 
 function uninstallLaunchd(): void {
@@ -112,7 +113,7 @@ function uninstallLaunchd(): void {
     throw new Error("No launchd service found (may not be installed)");
   }
 
-  Bun.spawnSync(["launchctl", "unload", plist], { stderr: "inherit" });
+  spawnSync(["launchctl", "unload", plist], { stderr: "inherit" });
   rmSync(plist);
 }
 
@@ -162,15 +163,15 @@ function installSystemd(): void {
   mkdirSync(getLogDir(), { recursive: true });
 
   if (existsSync(svc)) {
-    Bun.spawnSync(["sudo", "systemctl", "stop", SERVICE_NAME], { stderr: "inherit" });
+    spawnSync(["sudo", "systemctl", "stop", SERVICE_NAME], { stderr: "inherit" });
   }
 
   const tmp = `/tmp/${SERVICE_NAME}.service`;
   writeFileSync(tmp, generateService());
 
-  let result = Bun.spawnSync(["sudo", "te", tmp, svc], { stderr: "inherit" });
+  let result = spawnSync(["sudo", "te", tmp, svc], { stderr: "inherit" });
   if (result.exitCode !== 0) {
-    result = Bun.spawnSync(["sudo", "cp", tmp, svc], { stderr: "inherit" });
+    result = spawnSync(["sudo", "cp", tmp, svc], { stderr: "inherit" });
   }
   rmSync(tmp);
 
@@ -178,8 +179,8 @@ function installSystemd(): void {
     throw new Error("Failed to write service file (need sudo)");
   }
 
-  Bun.spawnSync(["sudo", "systemctl", "daemon-reload"], { stderr: "inherit" });
-  result = Bun.spawnSync(["sudo", "systemctl", "enable", "--now", SERVICE_NAME], { stderr: "inherit" });
+  spawnSync(["sudo", "systemctl", "daemon-reload"], { stderr: "inherit" });
+  result = spawnSync(["sudo", "systemctl", "enable", "--now", SERVICE_NAME], { stderr: "inherit" });
   if (result.exitCode !== 0) {
     throw new Error("systemctl enable failed");
   }
@@ -191,10 +192,10 @@ function uninstallSystemd(): void {
     throw new Error("No systemd service found (may not be installed)");
   }
 
-  Bun.spawnSync(["sudo", "systemctl", "stop", SERVICE_NAME], { stderr: "inherit" });
-  Bun.spawnSync(["sudo", "systemctl", "disable", SERVICE_NAME], { stderr: "inherit" });
-  Bun.spawnSync(["sudo", "rm", svc], { stderr: "inherit" });
-  Bun.spawnSync(["sudo", "systemctl", "daemon-reload"], { stderr: "inherit" });
+  spawnSync(["sudo", "systemctl", "stop", SERVICE_NAME], { stderr: "inherit" });
+  spawnSync(["sudo", "systemctl", "disable", SERVICE_NAME], { stderr: "inherit" });
+  spawnSync(["sudo", "rm", svc], { stderr: "inherit" });
+  spawnSync(["sudo", "systemctl", "daemon-reload"], { stderr: "inherit" });
 }
 
 // --- Windows Task Scheduler ---
@@ -258,11 +259,11 @@ function installWinTask(): void {
   writeFileSync(winScriptPath(), generateWinScript());
 
   // Stop existing task instance before deleting (prevents duplicate processes)
-  Bun.spawnSync(["schtasks", "/end", "/tn", WIN_TASK_NAME], { stderr: "ignore" });
-  Bun.spawnSync(["schtasks", "/delete", "/tn", WIN_TASK_NAME, "/f"], { stderr: "ignore" });
+  spawnSync(["schtasks", "/end", "/tn", WIN_TASK_NAME], { stderr: "ignore" });
+  spawnSync(["schtasks", "/delete", "/tn", WIN_TASK_NAME, "/f"], { stderr: "ignore" });
   const scriptPath = winScriptPath();
   const taskCmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`;
-  const result = Bun.spawnSync(
+  const result = spawnSync(
     ["schtasks", "/create", "/tn", WIN_TASK_NAME, "/tr", taskCmd, "/sc", "onlogon", "/rl", "limited", "/f"],
     { stderr: "inherit" },
   );
@@ -271,7 +272,7 @@ function installWinTask(): void {
   }
 
   // Start it now — check exit code (P2 fix: was silently ignored)
-  const runResult = Bun.spawnSync(["schtasks", "/run", "/tn", WIN_TASK_NAME], { stderr: "inherit" });
+  const runResult = spawnSync(["schtasks", "/run", "/tn", WIN_TASK_NAME], { stderr: "inherit" });
   if (runResult.exitCode !== 0) {
     logger.warn(`schtasks /run failed (exit ${runResult.exitCode}) — task will start at next logon`);
   }
@@ -279,9 +280,9 @@ function installWinTask(): void {
 
 function uninstallWinTask(): void {
   // Stop running instance first (P1 fix: was not stopping before delete)
-  Bun.spawnSync(["schtasks", "/end", "/tn", WIN_TASK_NAME], { stderr: "ignore" });
+  spawnSync(["schtasks", "/end", "/tn", WIN_TASK_NAME], { stderr: "ignore" });
 
-  const result = Bun.spawnSync(["schtasks", "/delete", "/tn", WIN_TASK_NAME, "/f"], { stderr: "inherit" });
+  const result = spawnSync(["schtasks", "/delete", "/tn", WIN_TASK_NAME, "/f"], { stderr: "inherit" });
   if (result.exitCode !== 0) {
     throw new Error("Failed to delete scheduled task (may not be installed)");
   }
@@ -292,7 +293,7 @@ function uninstallWinTask(): void {
 }
 
 function winTaskExists(): boolean {
-  const r = Bun.spawnSync(["schtasks", "/query", "/tn", WIN_TASK_NAME, "/fo", "list"], {
+  const r = spawnSync(["schtasks", "/query", "/tn", WIN_TASK_NAME, "/fo", "list"], {
     stdout: "ignore",
     stderr: "ignore",
   });

@@ -2,6 +2,7 @@ import { saveCredentials } from "./client.js";
 import type { Credentials, QrCodeStatus, QrCodeResponse } from "./types.js";
 import { logger } from "../utils/logger.js";
 import { addToAllowlist } from "../access/control.js";
+import { sleep } from "../utils/runtime-compat.js";
 import qt from "qrcode-terminal";
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com/";
@@ -33,16 +34,17 @@ export async function login(): Promise<void> {
     throw new Error(`Invalid QR code data: ${JSON.stringify(qrData)}`);
   }
 
-  // Step 2: render QR code in terminal
+  // Step 2: render QR code in terminal.
+  // qrcode-terminal is a declared dependency and ships with the package;
+  // a failure here means the install is broken, not that we should try to
+  // self-heal by spawning a package manager at runtime.
   try {
     qt.generate(qrUrl, { small: true });
-  } catch {
-    logger.info("Installing qrcode-terminal...");
-    Bun.spawnSync(["bun", "install", "qrcode-terminal"], {
-      cwd: process.cwd(),
-      stderr: "inherit",
-    });
-    qt.generate(qrUrl, { small: true });
+  } catch (err) {
+    logger.error("qrcode-terminal failed to render QR code:", err);
+    throw new Error(
+      "Could not render QR code. Please confirm the plugin's dependencies are installed (qrcode-terminal).",
+    );
   }
 
   process.stderr.write(`\nScan the QR code above with WeChat, or open this link:\n\n  ${qrUrl}\n\n`);
@@ -94,7 +96,7 @@ export async function login(): Promise<void> {
       }
     }
 
-    await Bun.sleep(POLL_INTERVAL_MS);
+    await sleep(POLL_INTERVAL_MS);
   }
 
   throw new Error("Login timeout, please run login again");
