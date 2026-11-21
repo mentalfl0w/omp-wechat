@@ -89,6 +89,7 @@ export async function apiFetch(
   endpoint: string,
   body: object,
   timeoutMs = 15000,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const baseUrl = creds.baseUrl.endsWith("/")
     ? creds.baseUrl
@@ -96,6 +97,11 @@ export async function apiFetch(
   const url = new URL(endpoint, baseUrl);
   const bodyStr = JSON.stringify(body);
   const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -108,7 +114,6 @@ export async function apiFetch(
       body: bodyStr,
       signal: controller.signal,
     });
-    clearTimeout(timer);
     const text = await res.text();
     if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${text}`);
     const data = JSON.parse(text) as Record<string, unknown>;
@@ -122,9 +127,9 @@ export async function apiFetch(
       throw new Error(`${endpoint} error ret=${ret} errcode=${errcode}${errmsg ? `: ${errmsg}` : ""} (code ${code})`);
     }
     return data;
-  } catch (err) {
+  } finally {
     clearTimeout(timer);
-    throw err;
+    signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -133,6 +138,7 @@ export async function apiFetch(
 export async function getUpdates(
   creds: Credentials,
   buf: string,
+  signal?: AbortSignal,
 ): Promise<GetUpdatesResponse> {
   try {
     const resp = await apiFetch(
@@ -143,6 +149,7 @@ export async function getUpdates(
         base_info: baseInfo(),
       },
       35000,
+      signal,
     );
     return resp as GetUpdatesResponse;
   } catch (err: unknown) {

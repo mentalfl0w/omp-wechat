@@ -15,12 +15,52 @@ export function isBun(): boolean {
   return typeof globalThis.Bun !== "undefined" && typeof globalThis.Bun.sleep === "function";
 }
 
-/** Runtime-agnostic sleep — Bun.sleep under Bun, setTimeout under Node. */
-export function sleep(ms: number): Promise<void> {
-  if (isBun()) {
-    return (globalThis.Bun as unknown as { sleep(ms: number): Promise<void> }).sleep(ms);
+/** AbortError matching the rejection shape of `fetch` under Bun and Node. */
+export function abortError(): Error {
+  const err = new Error("The operation was aborted.");
+  err.name = "AbortError";
+  return err;
+}
+
+/**
+ * Runtime-agnostic sleep — Bun.sleep under Bun, setTimeout under Node.
+ * When `signal` aborts, the sleep settles immediately (rejects AbortError)
+ * and its timer is cleared, so shutdown never waits out a 30s backoff.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    if (isBun()) {
+      return (globalThis.Bun as unknown as { sleep(ms: number): Promise<void> }).sleep(ms);
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    return promise;
   }
-  return new Promise((resolve) => setTimeout(resolve, ms));
+
+  if (signal.aborted) return Promise.reject(abortError());
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  let timer: Timer | undefined;
+  const onAbort = () => {
+    clearTimeout(timer);
+    reject(abortError());
+  };
+  timer = setTimeout(() => {
+    signal.removeEventListener("abort", onAbort);
+    resolve();
+  }, ms);
+  signal.addEventListener("abort", onAbort, { once: true });
+  return promise;
+}
+
+/**
+ * Like setInterval, but the handle is `unref`'d. Extension background work
+ * (standby failover, 6h cleanup) must never be the reason a short-lived host
+ * command such as `omp models --json` cannot exit.
+ */
+export function setUnrefInterval(callback: () => void, ms: number): Timer {
+  const timer = setInterval(callback, ms);
+  timer.unref();
+  return timer;
 }
 
 /** Result shape matching Bun.spawnSync's `{ exitCode, stdout, stderr }`. */

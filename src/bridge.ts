@@ -21,7 +21,7 @@ import type { AppConfig } from "./config.js";
 import { chunkText } from "./utils/chunk.js";
 import { makeDedupKey, isDuplicate } from "./utils/dedup.js";
 import { logger } from "./utils/logger.js";
-import { sleep, listenPort, type LockServer } from "./utils/runtime-compat.js";
+import { sleep, listenPort, setUnrefInterval, type LockServer } from "./utils/runtime-compat.js";
 import {
   getCredentials,
   getUpdates,
@@ -55,8 +55,22 @@ const BACKOFF_MS = 30_000;
 const RETRY_MS = 2_000;
 const MAX_SEND_RETRIES = 2;
 const CHUNK_LIMIT = 2000;
-const LOCK_PORT = 19821;
+const DEFAULT_LOCK_PORT = 19821;
 const FILE_TEXT_LIMIT = 10_000;
+
+/**
+ * Singleton lock port. `OMP_WECHAT_LOCK_PORT` overrides the default so tests
+ * and multi-profile setups never contend with the user's live service.
+ * Invalid values fall back instead of failing extension load.
+ */
+function resolveLockPort(): number {
+  const raw = process.env.OMP_WECHAT_LOCK_PORT;
+  if (!raw) return DEFAULT_LOCK_PORT;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 && port < 65_536 ? port : DEFAULT_LOCK_PORT;
+}
+
+const LOCK_PORT = resolveLockPort();
 
 /** Extensions whose content is extracted and sent to the AI as text. */
 const TEXT_FILE_EXTENSIONS: Record<string, true> = {
@@ -80,16 +94,50 @@ export class WeChatBridge {
   private state: DaemonState | null = null;
   private pollActive = false;
   private lockServer: LockServer | null = null;
-  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private cleanupTimer: Timer | null = null;
   private pool: SessionPool | null = null;
+  private pollController: AbortController | null = null;
+  private pollTask: Promise<void> | null = null;
+  private startPromise: Promise<DaemonState> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  /** Bumped by stop(); an in-flight start that observes a newer generation aborts. */
+  private lifecycleGeneration = 0;
   private commands = new CommandRegistry();
   constructor() {
     this.commands.register(new ModelCommand());
     this.commands.register(new NewSessionCommand());
   }
 
-  /** Start the poll loop. Idempotent — returns existing state if running. */
+  /**
+   * Start the poll loop. Idempotent and serialized — concurrent callers share
+   * one start. If stop() races an in-flight start, the start releases the lock
+   * it just acquired instead of resurrecting the bridge.
+   */
   async start(): Promise<DaemonState> {
+    if (this.stopPromise) {
+      await this.stopPromise;
+      // A retry that was already in flight when stop() began must not
+      // resurrect the bridge after shutdown. A start issued after the stop
+      // has fully settled is allowed (stopPromise is cleared in its finally).
+      return {
+        running: false,
+        config: loadConfig(),
+        creds: null,
+        lastError: "stopped before start completed",
+      };
+    }
+    if (this.pollActive && this.state) return this.state;
+    if (this.startPromise) return this.startPromise;
+
+    const generation = this.lifecycleGeneration;
+    const pending = this.startInternal(generation).finally(() => {
+      if (this.startPromise === pending) this.startPromise = null;
+    });
+    this.startPromise = pending;
+    return pending;
+  }
+
+  private async startInternal(generation: number): Promise<DaemonState> {
     const config = loadConfig();
 
     // Gracefully handle not-logged-in: getCredentials() throws, but we
@@ -103,6 +151,9 @@ export class WeChatBridge {
       return { running: false, config, creds: null, lastError: String(err) };
     }
 
+    if (generation !== this.lifecycleGeneration) {
+      return { running: false, config, creds, lastError: "stopped before start completed" };
+    }
     if (this.pollActive) {
       return this.state!;
     }
@@ -110,6 +161,13 @@ export class WeChatBridge {
     if (!(await this.acquireLock())) {
       logger.debug("Another poll loop is running (port lock held), skipping");
       return { running: false, config, creds, lastError: "another instance running" };
+    }
+
+    // stop() may have run while listenPort() was awaiting. Never leave a
+    // freshly-acquired singleton lock held by a bridge that is shutting down.
+    if (generation !== this.lifecycleGeneration) {
+      this.releaseLock();
+      return { running: false, config, creds, lastError: "stopped before start completed" };
     }
 
     this.pollActive = true;
@@ -130,7 +188,8 @@ export class WeChatBridge {
     };
 
     this.pool = new SessionPool(config.maxSessions, replyHandler, fileHandler);
-    this.state = { running: true, config, creds, lastError: null };
+    const state: DaemonState = { running: true, config, creds, lastError: null };
+    this.state = state;
 
     logger.info("OMP-Wechat poll loop starting", {
       maxSessions: config.maxSessions,
@@ -138,40 +197,107 @@ export class WeChatBridge {
       model: config.model ?? "(omp default)",
     });
 
-    this.pollLoop(creds, this.state).catch((err: unknown) => {
-      logger.error("Poll loop crashed:", err);
-      this.state!.running = false;
-      this.state!.lastError = String(err);
-      this.pollActive = false;
-      this.releaseLock();
-    });
+    const controller = new AbortController();
+    this.pollController = controller;
+    this.pollTask = this.pollLoop(creds, state, controller.signal)
+      .catch((err: unknown) => {
+        logger.error("Poll loop crashed:", err);
+        state.running = false;
+        state.lastError = String(err);
+      })
+      .finally(() => {
+        // Only the owner of the current controller may unwind shared state —
+        // a stale loop must never release a lock acquired by a newer start.
+        if (this.pollController !== controller) return;
+        this.pollController = null;
+        this.pollTask = null;
+        this.pollActive = false;
+        this.clearCleanupTimer();
+        this.releaseLock();
+      });
 
     // Cleanup stale session + outbox directories. Run immediately on start so
     // it always fires even if OMP kills this process within seconds
     // (observed ~10s restart cycle). The periodic timer handles the
     // long-lived case (boot-service process that survives for hours).
+    // Unref'd: background maintenance must not hold a short-lived host
+    // command (e.g. `omp models --json`) open.
     cleanupStaleSessions();
     cleanupStaleOutboxes(config.outboxDir);
-    this.cleanupTimer = setInterval(() => {
+    this.cleanupTimer = setUnrefInterval(() => {
       cleanupStaleSessions();
       cleanupStaleOutboxes(config.outboxDir);
     }, 6 * 60 * 60 * 1000);
 
-    return this.state;
+    return state;
   }
 
-  /** Stop the poll loop and dispose all sessions. */
-  async stop(): Promise<void> {
+  /**
+   * Stop the poll loop, abort any in-flight long poll / backoff, release the
+   * singleton lock and dispose sessions. Idempotent; safe to call while a
+   * start (including the 30s failover retry) is still in flight.
+   *
+   * `graceMs` bounds how long we wait for in-flight message handling and
+   * session disposal — `session_shutdown` handlers get a 2s host budget.
+   */
+  async stop(graceMs = 3_000): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+
+    this.lifecycleGeneration += 1;
     this.pollActive = false;
+
+    const controller = this.pollController;
+    this.pollController = null;
+    controller?.abort();
+    this.clearCleanupTimer();
+    this.releaseLock();
+
+    const startTask = this.startPromise;
+    const pollTask = this.pollTask;
+    this.pollTask = null;
+    const pool = this.pool;
+    this.pool = null;
+    this.state = null;
+
+    const pending = this.finishStop(startTask, pollTask, pool, graceMs).finally(() => {
+      if (this.stopPromise === pending) this.stopPromise = null;
+    });
+    this.stopPromise = pending;
+    return pending;
+  }
+
+  private async finishStop(
+    startTask: Promise<DaemonState> | null,
+    pollTask: Promise<void> | null,
+    pool: SessionPool | null,
+    graceMs: number,
+  ): Promise<void> {
+    const work: Promise<unknown>[] = [];
+    if (startTask) work.push(startTask.catch(() => {}));
+    if (pollTask) work.push(pollTask.catch(() => {}));
+    if (pool) work.push(pool.disposeAll());
+
+    const { promise: timeout, resolve: expire } = Promise.withResolvers<false>();
+    const timer = setTimeout(() => expire(false), graceMs);
+    try {
+      const completed = await Promise.race([
+        Promise.allSettled(work).then(() => true as const),
+        timeout,
+      ]);
+      if (!completed) {
+        logger.warn(`Shutdown grace ${graceMs}ms expired; outstanding work will settle in the background`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    logger.info("Poll loop stopped");
+  }
+
+  private clearCleanupTimer(): void {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
-    this.releaseLock();
-    if (this.pool) {
-      await this.pool.disposeAll();
-    }
-    logger.info("Poll loop stopped");
   }
 
   getPoolStatus() {
@@ -194,26 +320,28 @@ export class WeChatBridge {
     }
   }
 
-  private async pollLoop(creds: Credentials, state: DaemonState): Promise<void> {
+  private async pollLoop(
+    creds: Credentials,
+    state: DaemonState,
+    signal: AbortSignal,
+  ): Promise<void> {
     let failures = 0;
     logger.info("Long-poll started");
 
-    while (this.pollActive) {
+    while (this.pollActive && !signal.aborted) {
       try {
         const buf = loadSyncBuf();
-        const resp = await getUpdates(creds, buf);
+        const resp = await getUpdates(creds, buf, signal);
+        if (!this.pollActive || signal.aborted) break;
 
         if (resp.ret !== undefined && resp.ret !== 0) {
           failures++;
           logger.warn(
             `getupdates error ret=${resp.ret} errmsg=${resp.errmsg ?? ""} (${failures}/${MAX_FAILURES})`,
           );
-          if (failures >= MAX_FAILURES) {
-            failures = 0;
-            await sleep(BACKOFF_MS);
-          } else {
-            await sleep(RETRY_MS);
-          }
+          const delay = failures >= MAX_FAILURES ? BACKOFF_MS : RETRY_MS;
+          if (failures >= MAX_FAILURES) failures = 0;
+          if (!(await this.waitForRetry(delay, signal))) break;
           continue;
         }
 
@@ -226,21 +354,32 @@ export class WeChatBridge {
 
         const msgs = resp.msgs ?? [];
         for (const msg of msgs) {
+          if (!this.pollActive || signal.aborted) break;
           await this.handleInbound(creds, msg).catch((err: unknown) => {
             logger.error("Message handler error:", err);
           });
         }
       } catch (err: unknown) {
+        // Aborting fetch/backoff during stop() is expected, not a poll crash.
+        if (!this.pollActive || signal.aborted) break;
         failures++;
         state.lastError = String(err);
         logger.error(`Poll error (${failures}/${MAX_FAILURES}):`, err);
-        if (failures >= MAX_FAILURES) {
-          failures = 0;
-          await sleep(BACKOFF_MS);
-        } else {
-          await sleep(RETRY_MS);
-        }
+        const delay = failures >= MAX_FAILURES ? BACKOFF_MS : RETRY_MS;
+        if (failures >= MAX_FAILURES) failures = 0;
+        if (!(await this.waitForRetry(delay, signal))) break;
       }
+    }
+    logger.info("Long-poll stopped");
+  }
+
+  /** Wait out a retry/backoff delay, returning false when stop() aborts it. */
+  private async waitForRetry(ms: number, signal: AbortSignal): Promise<boolean> {
+    try {
+      await sleep(ms, signal);
+      return true;
+    } catch {
+      return false;
     }
   }
 
