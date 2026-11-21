@@ -6,6 +6,11 @@
  * lock, this process skips the poll loop but keeps a 30s failover
  * timer — if the lock holder dies, this process takes over automatically.
  *
+ * The failover timer is unref'd and every resource (timer, in-flight long
+ * poll/backoff, port lock, sessions) is torn down on `session_shutdown`, so
+ * one-shot host commands such as `omp models --json` can exit normally while
+ * the persistent RPC service keeps working.
+ *
  * Slash commands:
  *   /wechat login    — scan QR code to log in
  *   /wechat status   — show poll loop + session pool + authorized users
@@ -28,6 +33,7 @@ import {
 } from "./access/control.js";
 import { installService, uninstallService, isServiceInstalled } from "./service.js";
 import { logger } from "./utils/logger.js";
+import { setUnrefInterval } from "./utils/runtime-compat.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types — matches the ExtensionAPI surface from OMP
@@ -66,10 +72,24 @@ interface ExtensionAPI {
 // State
 // ═══════════════════════════════════════════════════════════════════════════
 
-
-// ═══════════════════════════════════════════════════════════════════════════
 let bridge: WeChatBridge | null = null;
 let daemonState: DaemonState | null = null;
+let retryTimer: Timer | null = null;
+/** Set once the host has begun shutting the extension down; blocks retry takeover. */
+let shuttingDown = false;
+
+/**
+ * Host `session_shutdown` handlers get a 2s budget. Leave headroom for the
+ * host while still letting an in-flight long poll abort and sessions dispose.
+ */
+const SHUTDOWN_GRACE_MS = 1_500;
+
+function clearRetryTimer(): void {
+  if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = null;
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Extension factory
@@ -81,9 +101,9 @@ export default async function wechatExtension(pi: ExtensionAPI) {
   }
 
   // Start the poll loop at extension load time — don't wait for session_start.
-  // In rpc mode, session_start never fires (no RPC client), but the extension
-  // IS loaded. bridge.start() spins up the port lock + pollLoop (long-poll
-  // fetch), both of which keep the event loop busy — the process stays alive.
+  // bridge.start() acquires the port lock + starts the long-poll fetch; a
+  // persistent RPC host keeps this process alive independently (heartbeat on
+  // stdin), so the extension does not need to.
   bridge = new WeChatBridge();
   daemonState = await bridge.start();
 
@@ -91,25 +111,32 @@ export default async function wechatExtension(pi: ExtensionAPI) {
     logger.info("WeChat bridge started at extension load");
   } else {
     // Not running (not logged in, or another instance holds the lock).
-    // Keep process alive and retry every 30s — picks up after /wechat login
-    // or takes over if the lock holder crashes.
+    // Retry every 30s — picks up after /wechat login or takes over if the
+    // lock holder crashes. Unref'd: standby must not keep a short-lived
+    // command such as `omp models --json` alive after its work is done.
     logger.debug("WeChat bridge not running, starting 30s retry", { lastError: daemonState.lastError });
-    setInterval(async () => {
-      if (daemonState?.running) return;
-      try {
-        daemonState = await bridge!.start();
-      } catch (err) {
-        logger.error("WeChat bridge restart failed:", err);
-        return;
-      }
-      if (daemonState.running) {
-        logger.info("WeChat bridge: took over from failed instance");
-      }
+    retryTimer = setUnrefInterval(() => {
+      void (async () => {
+        const active = bridge;
+        if (shuttingDown || !active || daemonState?.running) return;
+        try {
+          daemonState = await active.start();
+        } catch (err) {
+          logger.error("WeChat bridge restart failed:", err);
+          return;
+        }
+        if (daemonState.running) {
+          clearRetryTimer();
+          logger.info("WeChat bridge: took over from failed instance");
+        }
+      })();
     }, 30_000);
   }
+
   pi.on("session_start", async (_event, ctx) => {
     // Poll loop is already running from extension load.
     // If it was stopped (e.g. via /wechat stop), try to restart.
+    if (shuttingDown) return;
     if (bridge && !daemonState?.running) {
       try {
         daemonState = await bridge.start();
@@ -118,8 +145,27 @@ export default async function wechatExtension(pi: ExtensionAPI) {
         return;
       }
       if (daemonState.running) {
+        clearRetryTimer();
         ctx.ui.notify("WeChat bridge started", "info");
       }
+    }
+  });
+
+  pi.on("session_shutdown", async () => {
+    // Short-lived commands (`omp models --json`, print mode) emit this after
+    // their work completes. Release everything the extension owns so the host
+    // event loop can drain; the persistent RPC service keeps its host alive
+    // via stdin heartbeat and is unaffected until it too shuts down.
+    shuttingDown = true;
+    clearRetryTimer();
+    const active = bridge;
+    bridge = null;
+    daemonState = null;
+    if (!active) return;
+    try {
+      await active.stop(SHUTDOWN_GRACE_MS);
+    } catch (err) {
+      logger.error("WeChat bridge shutdown failed:", err);
     }
   });
 
@@ -207,6 +253,7 @@ export default async function wechatExtension(pi: ExtensionAPI) {
         }
 
         case "stop": {
+          clearRetryTimer();
           if (bridge) {
             await bridge.stop();
             bridge = null;
@@ -242,6 +289,7 @@ export default async function wechatExtension(pi: ExtensionAPI) {
         }
 
         case "clear": {
+          clearRetryTimer();
           if (bridge) {
             await bridge.stop();
             bridge = null;

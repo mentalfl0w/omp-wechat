@@ -12,20 +12,46 @@
  * Checks:
  *   A. Extension loads, factory runs, /wechat registers, /wechat status
  *      works — fake HOME with NO credentials so the poll loop
- *      short-circuits at "not logged in" (no network, no hang).
+ *      short-circuits at "not logged in" (no network, no hang), then
+ *      session_shutdown clears its background work.
  *   B. Port-lock arbitration via the same lock helper the bridge uses:
- *      first holder wins 19821, second attempt rejects.
+ *      first holder wins an isolated ephemeral port, second attempt rejects.
  *
  * Run: node scripts/test-pi-load.mjs
  */
 import { createJiti } from "jiti/static";
 import { tmpdir, homedir } from "node:os";
+import { createServer as createNetServer } from "node:net";
 import { join, dirname } from "node:path";
 import { mkdtempSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
+
+/** Find a free loopback port without ever binding the user's live 19821. */
+async function freeLoopbackPort() {
+  const server = createNetServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = server.address();
+  await new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
+  return port;
+}
+
+// If a background handle survives the test, fail instead of hanging forever.
+const watchdog = setTimeout(() => {
+  console.error("FAIL: event loop still has work after teardown (issue #6 regression)");
+  process.exit(1);
+}, 30_000);
+watchdog.unref();
+
+const LOCK_PORT = await freeLoopbackPort();
+process.env.OMP_WECHAT_LOCK_PORT = String(LOCK_PORT);
 
 // ── Isolate BOTH the module-load dir and HOME ──
 const simDir = mkdtempSync(join(tmpdir(), "pi-sim-"));
@@ -38,6 +64,9 @@ cpSync(join(repoRoot, "dist", "index.js"), join(simDir, "ext", "index.js"));
 // running:false without starting the poll loop. Command surface still
 // registers, which is exactly the load-time contract.
 process.env.HOME = join(simDir, "home");
+if (homedir() !== process.env.HOME) {
+  throw new Error(`FAIL: HOME isolation failed (homedir=${homedir()}); refusing to touch real credentials`);
+}
 
 // ── Replicate Pi's jiti alias table (loader.ts getAliases) ──
 // @oh-my-pi/* deliberately ABSENT — exactly Pi's table. Only the specifier
@@ -66,9 +95,10 @@ if (typeof factory !== "function") {
 console.log("PASS: dist/index.js loaded via jiti (isolated, @oh-my-pi unresolvable)");
 
 const commands = new Map();
+const handlers = new Map();
 const api = {
   pi: undefined, // Pi does not inject self-ref
-  on: () => {},
+  on: (event, handler) => handlers.set(event, handler),
   registerCommand: (name, def) => commands.set(name, def),
   setLabel: undefined,
 };
@@ -86,18 +116,26 @@ const statusCtx = {
 await commands.get("wechat").handler("status", statusCtx);
 console.log("PASS: /wechat status handler ran");
 
+// The host emits session_shutdown for short-lived commands; the extension
+// must clear its standby retry timer so the host can exit.
+const onShutdown = handlers.get("session_shutdown");
+if (typeof onShutdown !== "function") {
+  throw new Error("FAIL: extension did not register session_shutdown");
+}
+await onShutdown({ type: "session_shutdown" }, { ui: { notify: () => {} } });
+console.log("PASS: session_shutdown cleared extension background work");
+
 // ── B. Port-lock arbitration (same helper the bridge uses) ──
 const { listenPort } = await jiti.import(
   join(repoRoot, "src", "utils", "runtime-compat.ts"),
   { default: false },
 );
-const first = await listenPort(19821);
-console.log("PASS: first lock holder bound 19821");
+const first = await listenPort(LOCK_PORT);
+console.log(`PASS: first lock holder bound isolated port ${LOCK_PORT}`);
 let secondRejected = false;
 try {
-  const second = await listenPort(19821);
+  const second = await listenPort(LOCK_PORT);
   second.stop();
-  throw new Error("FAIL: second lock holder should have been rejected");
 } catch {
   secondRejected = true;
 }
@@ -115,6 +153,7 @@ if (typeof globalThis.Bun !== "undefined") {
 // Cleanup
 rmSync(simDir, { recursive: true, force: true });
 console.log("\nALL TESTS PASSED");
-// The extension keeps a 30s failover setInterval alive (host is long-lived);
-// exit explicitly so the test runner doesn't hang on the event loop.
-process.exit(0);
+// On success the script never calls process.exit(): a short-lived host command
+// must be able to exit once its own work is done. Extension timers are unref'd
+// (and cleared on session_shutdown); the unref'd watchdog above only fires if
+// a lingering handle keeps the loop alive, i.e. issue #6 regressed.
