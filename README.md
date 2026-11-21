@@ -14,11 +14,14 @@ WeChat user → iLink Bot API → [OMP/Pi process] → SDK → AI provider
 
 The extension runs **inside** the OMP/Pi process. The iLink long-poll loop starts at extension load time (not `session_start`) as a background promise. A singleton port lock ensures only one process runs the poll loop at a time — other OMP/Pi processes standby with a 30s failover timer to take over if the lock holder crashes.
 
+The failover timer and periodic cleanup timer are both `unref`'d, and `session_shutdown` aborts the in-flight long poll/backoff, releases the port lock and disposes sessions. Short-lived host commands such as `omp models --json` therefore exit normally, while a persistent RPC host stays alive on its own stdin heartbeat.
+
 For boot-time persistence, install a launchd/systemd service via `/wechat install`. The service runs `omp --mode rpc` (or `pi --mode rpc`) with a `get_state` JSON-RPC heartbeat piped to stdin every 5s — without an active RPC client, `omp --mode rpc` exits on idle stdin, so the heartbeat keeps the process alive. `KeepAlive`/`Restart=always` handles crashes and reboots.
 
 - **No external `bun` required** — OMP/Pi is a standalone binary with an embedded runtime
 - **Singleton** — port lock guarantees one poll loop across all concurrent OMP/Pi processes
-- **Failover** — non-lock-holder processes check every 30s and take over if the lock holder dies
+- **Failover** — non-lock-holder processes check every 30s (unref'd timer) and take over if the lock holder dies
+- **Clean teardown** — `session_shutdown` clears timers, aborts the long poll/backoff, releases the lock and disposes sessions, so one-shot commands exit
 - **iLink layer**: long-polls `getupdates` for inbound messages, sends replies via `sendmessage`
 - **AI engine**: one in-memory session per WeChat chat, prompts injected via `session.prompt()`
 - **Typing indicator**: shows "Typing..." on WeChat while the model is thinking
@@ -29,7 +32,7 @@ For boot-time persistence, install a launchd/systemd service via `/wechat instal
 - **OMP/Pi extension**: installs via `omp plugin link .` or `pi plugin link .`, auto-starts poll loop at extension load time
 - **Slash commands**: `/wechat login`, `/wechat status`, `/wechat pair`, `/wechat allow`, `/wechat revoke`, `/wechat list`, `/wechat stop`, `/wechat install`, `/wechat uninstall`
 - **Singleton**: port lock guarantees one poll loop across all concurrent OMP/Pi processes — no duplicate replies
-- **Failover**: 30s timer takes over automatically if the lock holder crashes
+- **Failover**: 30s unref'd timer takes over automatically if the lock holder crashes
 - **Bidirectional**: receive and reply to WeChat text messages
 - **Image recognition**: inbound images are downloaded from WeChat CDN, AES-decrypted, and passed to the vision model
 - **Inbound file content**: text files (`.txt/.md/.csv/.json/.py/…`) sent by the user are downloaded, decrypted, and their content is handed to the AI; binary files arrive as metadata placeholders
@@ -183,14 +186,29 @@ The logged-in user (who scanned the QR code) is automatically added to the allow
 
 | Scenario | Behavior |
 |---|---|
-| Host process starts | Poll loop starts at extension load time (acquires singleton lock) |
-| Other host processes | Standby with 30s failover timer, take over if lock holder dies |
-| Host process exits | Poll loop stops, lock released, all sessions disposed |
+| Host process starts | Poll loop starts at extension load time (acquires singleton lock or stands by) |
+| Other host processes | Standby with 30s unref'd failover timer, take over if lock holder dies |
+| Short-lived host commands (`omp models --json`, print mode) | Standby timer never holds the process open; on `session_shutdown` all timers are cleared, in-flight poll/backoff aborted, lock released, sessions disposed |
+| Host process exits | `session_shutdown` stops the poll loop, aborts in-flight work, releases the lock, disposes all sessions |
 | Host crashes | Failover timer in another process detects dead lock and takes over; or launchd/systemd/Task Scheduler restarts the host (if `/wechat install` was run) |
 | Machine reboots | macOS/Linux: service auto-starts at boot; Windows: service starts at user logon (if installed), poll loop resumes |
 | No boot service | Poll loop only runs while a host process is active |
 
 Logs: `~/.omp/logs/wechat.log` (poll loop) and `~/.omp/logs/rpc.log` (boot service stderr)
+
+## Development
+
+```bash
+bun run typecheck          # tsc --noEmit
+bun run build              # bundle src/index.ts → dist/index.js
+node scripts/test-lifecycle.mjs   # lifecycle/teardown regression (issue #6)
+node scripts/test-pi-load.mjs     # Pi-host load simulation (built dist required)
+```
+
+`test-lifecycle` exercises the real bridge against a mock iLink server: standby
+lock contention, in-flight long-poll abort on stop, `start`/`stop` races,
+restart/takeover, and abortable backoff sleep. It does not call `process.exit`,
+so a lingering timer, fetch, or listener fails the test instead of passing.
 
 ## Project Structure
 
