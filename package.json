@@ -10,7 +10,9 @@
   ],
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun --external omp-legacy-pi-modules --external '@oh-my-pi/*' --external '@earendil-works/*'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-pi-load.mjs && node scripts/test-lifecycle.mjs",
+    "test:lifecycle": "node scripts/test-lifecycle.mjs"
   },
   "omp": {
     "extensions": [
